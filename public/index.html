@@ -90,9 +90,27 @@ function login(reg){ $('#app').innerHTML=`<section class="hero"><div><span class
 ${reg?'<label for="e">Correo institucional</label><input id="e" type="email" required autocomplete="email">':''}
 <label for="p">Contraseña${reg?' (mínimo 8 caracteres)':''}</label><input id="p" type="password" required minlength="${reg?8:1}" autocomplete="${reg?'new-password':'current-password'}">
 <button class="gold" style="width:100%">${reg?'Crear cuenta':'Entrar'}</button>
-<p class="mut" style="text-align:center"><a href="#" onclick="login(${!reg});return false">${reg?'Ya tengo cuenta':'Soy estudiante y no tengo cuenta'}</a></p></form></section>`;
+<p class="mut" style="text-align:center"><a href="#" onclick="login(${!reg});return false">${reg?'Ya tengo cuenta':'Soy estudiante y no tengo cuenta'}</a>${reg?'':' · <a href="#" onclick="recuperar();return false">Olvidé mi contraseña</a>'}</p></form></section>`;
   $('#f').onsubmit=async e=>{e.preventDefault();try{const d={matricula:$('#m').value,email:reg?$('#e').value:undefined,password:$('#p').value};
     const r=await api(reg?'/registro':'/login','POST',d);if(r.pendiente)return verificar(d,r.correo);await init()}catch(x){toast(x.message,1)}}}
+// Recuperar la contraseña: 1) matrícula → código al correo de la cuenta; 2) código + contraseña nueva. Los avisos no revelan si la matrícula tiene cuenta.
+function recuperar(m=''){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Recuperar acceso</span><h1>¿Olvidaste tu contraseña?</h1>
+<p>Escribe tu matrícula o clave de docente. Si tiene una cuenta, enviamos un código de 6 dígitos al correo con el que se registró.</p></div>
+<form class="card" id="r"><h2>Recuperar contraseña</h2><label for="m">Matrícula o clave de docente</label><input id="m" required autocomplete="username" value="${esc(m)}">
+<button class="gold" style="width:100%">Enviar código</button><p class="mut" style="text-align:center"><a href="#" id="at">Volver a iniciar sesión</a></p></form></section>`;
+  $('#at').onclick=e=>{e.preventDefault();login()};
+  $('#r').onsubmit=async e=>{e.preventDefault();try{const r=await api('/recuperar','POST',{matricula:$('#m').value});toast(r.mensaje);restablecer($('#m').value.trim())}catch(x){toast(x.message,1)}}}
+function restablecer(m){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Casi listo</span><h1>Escribe el código y tu contraseña nueva.</h1>
+<p>Si la matrícula tiene una cuenta, el código llegó a su correo (revisa también el spam). Caduca en 15 minutos. Al cambiar la contraseña se cierran las sesiones abiertas.</p></div>
+<form class="card" id="n"><h2>Contraseña nueva</h2><label for="c">Código de 6 dígitos</label>
+<input id="c" required inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" autocomplete="one-time-code">
+<label for="p">Contraseña nueva (mínimo 8 caracteres; 10 para docentes y secretaría)</label><input id="p" type="password" required minlength="8" autocomplete="new-password">
+<button class="gold" style="width:100%">Cambiar contraseña</button>
+<p class="mut" style="text-align:center"><a href="#" id="re">Reenviar el código</a> · <a href="#" id="at">Volver</a></p></form></section>`;
+  $('#c').focus();
+  $('#n').onsubmit=async e=>{e.preventDefault();try{await api('/recuperar/confirmar','POST',{matricula:m,codigo:$('#c').value,password:$('#p').value});login();toast('Contraseña cambiada. Ya puedes iniciar sesión.')}catch(x){toast(x.message,1)}};
+  $('#re').onclick=async e=>{e.preventDefault();try{const r=await api('/recuperar','POST',{matricula:m});toast(r.mensaje)}catch(x){toast(x.message,1)}};
+  $('#at').onclick=e=>{e.preventDefault();login()}}
 // Segundo paso del registro: el código de 6 dígitos que llegó al correo institucional (la cuenta se crea hasta confirmarlo).
 function verificar(d,correo){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Un paso más</span><h1>Revisa tu correo institucional.</h1>
 <p>Para confirmar que la matrícula es tuya te enviamos un código de 6 dígitos a <b>${esc(correo)}</b>. Caduca en 15 minutos.</p></div>

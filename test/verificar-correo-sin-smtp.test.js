@@ -24,3 +24,14 @@ test('producción sin SMTP: 503 claro, sin crear solicitud ni gastar el cupo de 
     assert.equal(db.prepare('SELECT COUNT(*) n FROM users WHERE matricula=?').get('24100002').n, 0);
   } finally { delete process.env.NODE_ENV; }
 });
+
+test('recuperar contraseña sin SMTP: en desarrollo el código sale por la consola; en producción, 503', async t => {
+  const log = t.mock.method(console, 'log', () => {});
+  assert.equal((await post('/api/recuperar', { matricula: 'DOC001' })).status, 200);
+  const salida = log.mock.calls.map(c => c.arguments.join(' ')).join('\n'), cod = /restablecer.*?\b(\d{6})\b/s.exec(salida)?.[1];
+  assert.ok(cod, 'el código aparece en la consola'); assert.match(salida, /doc001@uan\.edu\.mx/);
+  assert.equal((await post('/api/recuperar/confirmar', { matricula: 'DOC001', codigo: cod, password: 'clave-docente-propia' })).status, 200);
+  assert.equal((await post('/api/login', { matricula: 'DOC001', password: 'clave-docente-propia' })).status, 200);
+  process.env.NODE_ENV = 'production';
+  try { const r = await post('/api/recuperar', { matricula: 'DOC002' }); assert.equal(r.status, 503); assert.match(r.json.error, /correo del sistema no está configurado/); } finally { delete process.env.NODE_ENV; }
+});
