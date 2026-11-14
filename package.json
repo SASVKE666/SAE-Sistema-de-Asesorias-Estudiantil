@@ -5,6 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node --no-warnings server.js",
+    "demo": "node --no-warnings server.js --demo",
+    "crear-usuario": "node --no-warnings scripts/crear-usuario.js",
     "test": "node --no-warnings --test"
   },
   "author": "",

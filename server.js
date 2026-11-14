@@ -153,5 +153,12 @@ app.post('/api/horarios', auth('docente'), (req, res) => {
 app.get('/api/notificaciones', auth('secretaria'), (req, res) => res.json(q('SELECT * FROM notificaciones ORDER BY id DESC LIMIT 100')));
 app.get('/api/qr', async (req, res) => res.json({ url: BASE, png: await QRCode.toDataURL(BASE, { margin: 1, width: 320 }) }));
 app.use(express.static(path.join(__dirname, 'public')));
-if (require.main === module) { require('./seed')(db); app.listen(PORT, () => console.log(`SAE en ${BASE}`)); }
+if (require.main === module) {
+  // Los datos de demostración (seed.js) traen usuarios con contraseñas conocidas: SOLO se cargan si se piden (npm run demo / SEED_DEMO=1) y nunca en producción.
+  const demo = process.argv.includes('--demo') || /^(1|true|si|sí)$/i.test(process.env.SEED_DEMO || '');
+  if (demo && process.env.NODE_ENV === 'production') { console.error('Error: los datos de demostración no se cargan con NODE_ENV=production (traen contraseñas conocidas).'); process.exit(1); }
+  if (demo) require('./seed')(db);
+  else if (!db.prepare('SELECT COUNT(*) n FROM users').get().n) console.log('Aviso: la base no tiene usuarios. Para probar con datos de demostración: npm run demo. Para crear la cuenta de la secretaría: npm run crear-usuario (ver docs).');
+  app.listen(PORT, () => console.log(`SAE en ${BASE}`));
+}
 app.db = db; module.exports = app;

@@ -19,7 +19,8 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 | Archivo | Función |
 |---|---|
 | `server.js` | API, sesiones, permisos, correos, QR |
-| `seed.js` | Datos de demostración (padrón, docentes, horarios) |
+| `seed.js` | Datos de demostración (padrón, docentes, horarios); solo se cargan con `npm run demo` |
+| `scripts/crear-usuario.js` | Crea cuentas de secretaría o docente con contraseña propia (`npm run crear-usuario`) |
 | `public/index.html` | Interfaz completa (login, catálogo, agendar, historial, disponibilidad, QR) |
 | `test/flujo.test.js` | Prueba integral automatizada |
 | `docs/` | Este documento y la tesis |
@@ -35,7 +36,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 | `notificaciones` | Copia de cada correo y si se envió |
 
 ### Decisiones de diseño y seguridad
-- **Registro solo con matrícula del padrón** (actividad 1.3.1). Docentes y secretaría se dan de alta desde `seed.js`.
+- **Registro solo con matrícula del padrón** (actividad 1.3.1). Docentes y secretaría se dan de alta con `npm run crear-usuario` (o con `npm run demo` para datos de prueba).
 - **Contraseñas** con bcrypt; **sesión** en cookie firmada, `httpOnly`, 8 horas; freno a fuerza bruta: solo cuentan los **fallos**, por matrícula + IP (8 en 10 min; el acceso correcto limpia el contador) y un tope amplio de 100 fallos por IP. Así quien se equivoca no bloquea a los demás aunque compartan la red de la facultad.
 - **Consultas parametrizadas** (evita inyección SQL) y escape de HTML en la interfaz (evita XSS).
 - **Tope de reservas:** cada estudiante puede tener como máximo 2 asesorías activas (`MAX_ASESORIAS_ACTIVAS`); la tercera recibe 409 con el mensaje "Ya tienes 2 asesorías activas…". Cancelar o que se realice la asesoría libera el cupo. La revisión y la reserva ocurren en el mismo turno síncrono, así que solicitudes simultáneas no lo rebasan.
@@ -64,10 +65,10 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
    ```
 3. Instala dependencias: `npm install`
 4. (Opcional) copia `.env.example` a `.env` y ajusta valores; en PowerShell puedes definirlos con `$env:SESSION_SECRET="..."`.
-5. Inicia: `npm start` → abre http://localhost:3000
-6. Verifica con las pruebas: `npm test` (debe mostrar 3 pruebas correctas).
+5. Inicia con datos de demostración: `npm run demo` → abre http://localhost:3000. (`npm start` a secas arranca con la base **vacía**, sin usuarios: es lo que se usa en producción.)
+6. Verifica con las pruebas: `npm test` (todas deben pasar).
 
-**Cuentas de demostración** (cámbialas antes de publicar):
+**Cuentas de demostración** (solo existen con `npm run demo`; tienen contraseñas conocidas, por eso **nunca** se cargan con `NODE_ENV=production`: el servidor se niega a arrancar):
 | Rol | Usuario | Contraseña |
 |---|---|---|
 | Estudiante | Se registra con matrícula `24100001`, `24100002` o `24100003` | La que elija |
@@ -89,7 +90,12 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 ## 4. Puesta en producción (resumen)
 1. Servidor con Node 22.5+ (VPS o hosting con Node). Dominio y **certificado SSL** (por ejemplo con Nginx + Let's Encrypt como proxy hacia el puerto 3000).
 2. Define `BASE_URL=https://tu-dominio`, `TRUST_PROXY=1` (si usas Nginx), un `SESSION_SECRET` largo y aleatorio y las variables SMTP (el correo institucional o un servicio SMTP).
-3. **Sustituye los datos de demostración:** edita `seed.js` con el padrón real y los docentes reales antes del primer arranque (o elimina `data/sae.db` y vuelve a iniciar). Cambia las contraseñas de demostración.
+3. **Sin datos de demostración:** arranca con `NODE_ENV=production npm start` (la base queda vacía; no se crean usuarios con contraseñas conocidas). Crea la cuenta de la secretaría y las de los docentes con tu propia contraseña (se pide por teclado, sin mostrarse; mínimo 10 caracteres y no puede ser una de las de demostración):
+   ```bash
+   npm run crear-usuario -- secretaria SEC001 "Secretaría de Economía" secretaria@uan.edu.mx
+   npm run crear-usuario -- docente DOC010 "Dra. Ana Pérez" ana@uan.edu.mx --materias "Estadística, Econometría" --cubiculo "Cubículo 3"
+   ```
+   Para automatizarlo (sin terminal) define la contraseña en la variable `SAE_PASSWORD`. El **padrón de estudiantes** todavía no tiene carga por archivo: ver "Límites conocidos". Si probaste con `npm run demo` en esa misma base, bórrala (`data/sae.db`) antes de publicar.
 4. Mantén el proceso activo con `pm2 start server.js --name sae`. Respalda `data/sae.db` periódicamente.
 5. Genera el QR desde la sección "Código QR" e imprímelo para carteles.
 
@@ -105,6 +111,6 @@ Si GitHub pide contraseña, usa un *Personal Access Token* (Settings → Develop
 
 ## 6. Límites conocidos y siguientes pasos
 - No hay carga de fotos de docentes (se muestran iniciales); el campo `foto` ya existe en la base.
-- Alta de docentes y padrón se hace por `seed.js`; un panel de administración sería la siguiente mejora.
+- El alta de docentes y secretaría se hace con `npm run crear-usuario`; la **carga del padrón de estudiantes** y el alta masiva de docentes aún no tienen herramienta (un panel de administración o una carga por CSV sería la siguiente mejora).
 - Sin recuperación de contraseña por correo.
 - Las pruebas de aceptación con usuarios reales (1.4.3) están por realizarse.
