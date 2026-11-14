@@ -11,7 +11,7 @@ const secretoFuerte = v => secretoUsable(v) && v.length >= 32;
 const SECRET = secretoUsable(process.env.SESSION_SECRET) ? process.env.SESSION_SECRET : crypto.randomBytes(32).toString('hex');
 const db = new DatabaseSync(process.env.DB_FILE || path.join(__dirname, 'data', 'sae.db'));
 db.exec(`PRAGMA foreign_keys=ON;
-CREATE TABLE IF NOT EXISTS padron(matricula TEXT PRIMARY KEY, nombre TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS padron(matricula TEXT PRIMARY KEY, nombre TEXT NOT NULL, email TEXT);   -- email (opcional): correo institucional de esa matrícula
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, matricula TEXT UNIQUE NOT NULL, nombre TEXT NOT NULL,
   email TEXT NOT NULL, rol TEXT NOT NULL CHECK(rol IN('estudiante','docente','secretaria')), pass_hash TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS docentes(id INTEGER PRIMARY KEY, user_id INTEGER UNIQUE REFERENCES users(id),
@@ -22,7 +22,12 @@ CREATE TABLE IF NOT EXISTS asesorias(id INTEGER PRIMARY KEY, estudiante_id INTEG
   docente_id INTEGER NOT NULL REFERENCES docentes(id), horario_id INTEGER NOT NULL REFERENCES horarios(id),
   materia TEXT NOT NULL, duda TEXT NOT NULL, estado TEXT NOT NULL DEFAULT 'pendiente', creada TEXT DEFAULT CURRENT_TIMESTAMP);
 CREATE TABLE IF NOT EXISTS notificaciones(id INTEGER PRIMARY KEY, asesoria_id INTEGER, destinatario TEXT, asunto TEXT,
-  cuerpo TEXT, enviado INTEGER DEFAULT 0, fecha TEXT DEFAULT CURRENT_TIMESTAMP);`);
+  cuerpo TEXT, enviado INTEGER DEFAULT 0, fecha TEXT DEFAULT CURRENT_TIMESTAMP);
+-- Códigos de un solo uso enviados por correo (verificar el registro, recuperar la contraseña). Solo se guarda su huella, nunca el código.
+CREATE TABLE IF NOT EXISTS codigos(tipo TEXT NOT NULL, matricula TEXT NOT NULL, correo TEXT NOT NULL, pass_hash TEXT, codigo_hash TEXT NOT NULL,
+  intentos INTEGER NOT NULL DEFAULT 0, expira INTEGER NOT NULL, creado INTEGER NOT NULL, envios INTEGER NOT NULL DEFAULT 1, ventana INTEGER NOT NULL,
+  PRIMARY KEY(tipo, matricula));`);
+if (!db.prepare('PRAGMA table_info(padron)').all().some(c => c.name === 'email')) db.exec('ALTER TABLE padron ADD COLUMN email TEXT');   // bases creadas antes de existir esa columna
 // Las fechas y horas de los horarios son hora local de la Unidad Académica (no UTC): "ahora" se calcula en esa zona (ZONA_HORARIA, por defecto Nayarit/Pacífico).
 const ZONA_DEFECTO = 'America/Mazatlan';
 function ahoraLocal() {
@@ -52,6 +57,49 @@ const detalle = id => one(`SELECT a.*, h.fecha, h.hora, e.nombre est_nombre, e.e
   FROM asesorias a JOIN horarios h ON h.id=a.horario_id JOIN users e ON e.id=a.estudiante_id
   JOIN docentes d ON d.id=a.docente_id JOIN users u ON u.id=d.user_id WHERE a.id=?`, id);
 const secretarias = () => q("SELECT email FROM users WHERE rol='secretaria'").map(r => r.email);
+
+// ---- Códigos por correo: 6 dígitos, un solo uso, caducan a los 15 min ----
+// Defensas: máx. 5 intentos por código, 60 s entre envíos y 5 envíos por hora y matrícula (para que nadie pueda llenar el buzón de otra persona).
+const CODIGO_VIDA = 15 * 60e3, ESPERA_REENVIO = 60e3, VENTANA_ENVIOS = 3600e3, MAX_ENVIOS = 5, MAX_INTENTOS_CODIGO = 5;
+const huella = (tipo, matricula, codigo) => crypto.createHmac('sha256', SECRET).update(`${tipo}|${matricula}|${codigo}`).digest('hex');
+const iguales = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+const enmascarar = c => `${c[0]}***${c.slice(c.lastIndexOf('@'))}`;
+// Dominios de correo aceptados cuando el padrón no trae el correo de la matrícula (DOMINIOS_CORREO="uan.edu.mx,otro.mx"; "*" acepta cualquiera, no recomendado).
+const dominiosCorreo = () => (process.env.DOMINIOS_CORREO || 'uan.edu.mx').split(',').map(d => d.trim().toLowerCase().replace(/^@/, '')).filter(Boolean);
+const dominioPermitido = c => { const l = dominiosCorreo(); if (l.includes('*')) return true; const d = c.slice(c.lastIndexOf('@') + 1); return l.some(x => d === x || d.endsWith('.' + x)); };
+// Crea (o reemplaza) el código de ese tipo y matrícula respetando las esperas y topes. Devuelve { codigo } o { status, error }.
+function emitirCodigo(tipo, matricula, correo, passHash) {
+  const ahora = Date.now(); run('DELETE FROM codigos WHERE expira < ? AND ventana < ?', ahora, ahora - VENTANA_ENVIOS);
+  const ant = one('SELECT * FROM codigos WHERE tipo=? AND matricula=?', tipo, matricula); let envios = 1, ventana = ahora;
+  if (ant) {
+    if (ahora - ant.creado < ESPERA_REENVIO) return { status: 429, error: 'Ya te enviamos un código hace un momento. Espera un minuto para pedir otro.' };
+    if (ahora - ant.ventana < VENTANA_ENVIOS) { if (ant.envios >= MAX_ENVIOS) return { status: 429, error: 'Pediste demasiados códigos. Intenta de nuevo en una hora.' }; envios = ant.envios + 1; ventana = ant.ventana; }
+  }
+  const codigo = String(crypto.randomInt(0, 1e6)).padStart(6, '0');
+  run('INSERT OR REPLACE INTO codigos(tipo,matricula,correo,pass_hash,codigo_hash,intentos,expira,creado,envios,ventana) VALUES(?,?,?,?,?,0,?,?,?,?)',
+    tipo, matricula, correo, passHash ?? null, huella(tipo, matricula, codigo), ahora + CODIGO_VIDA, ahora, envios, ventana);
+  return { codigo };
+}
+// Envía el correo con el código. En la bitácora queda que se envió, pero NO el código (la secretaría puede leer la bitácora).
+async function enviarCodigo(to, asunto, cuerpo) {
+  let ok = 0;
+  if (mailer) { try { await mailer.sendMail({ from: process.env.SMTP_FROM || 'SAE <no-reply@uan.edu.mx>', to, subject: asunto, text: cuerpo }); ok = 1; } catch (e) { console.error('Correo falló:', e.message); } }
+  else if (process.env.NODE_ENV !== 'production') { console.log(`[sin SMTP] Correo para ${to} · ${asunto}\n${cuerpo}`); ok = 1; }   // desarrollo: el código se ve en la consola
+  run('INSERT INTO notificaciones(asesoria_id,destinatario,asunto,cuerpo,enviado) VALUES(NULL,?,?,?,?)', to, asunto, '(contiene un código de un solo uso: no se guarda)', ok);
+  return !!ok;
+}
+const sinCorreo = () => !mailer && process.env.NODE_ENV === 'production' ? 'El correo del sistema no está configurado, así que no se puede enviar el código. Avisa a la secretaría.' : null;
+// Comprueba el código recibido (cuenta intentos, caduca). Devuelve el registro del código si es correcto, o { status, error }.
+function comprobarCodigo(tipo, matricula, codigo) {
+  const c = one('SELECT * FROM codigos WHERE tipo=? AND matricula=?', tipo, matricula);
+  if (!c || c.expira < Date.now()) return { status: 400, error: 'El código venció o no hay una solicitud pendiente. Pide uno nuevo.' };
+  if (c.intentos >= MAX_INTENTOS_CODIGO) return { status: 429, error: 'Demasiados intentos con este código. Pide uno nuevo.' };
+  const cod = String(codigo ?? '').replace(/\s/g, '');
+  if (!/^\d{6}$/.test(cod) || !iguales(c.codigo_hash, huella(tipo, matricula, cod))) {
+    run('UPDATE codigos SET intentos=intentos+1 WHERE tipo=? AND matricula=?', tipo, matricula); return { status: 400, error: 'Código incorrecto.' };
+  }
+  return c;
+}
 
 // ---- Sesión: cookie firmada (HMAC) httpOnly ----
 const sign = d => { const p = Buffer.from(JSON.stringify(d)).toString('base64url'); return p + '.' + crypto.createHmac('sha256', SECRET).update(p).digest('base64url'); };
@@ -83,14 +131,34 @@ const limite = (req, res, next) => {
   });
   next();
 };
-app.post('/api/registro', limite, (req, res) => {
+// El registro NO crea la cuenta: guarda la solicitud y envía un código al correo institucional; la cuenta se crea al confirmarlo (/api/registro/confirmar).
+// Así quien conozca la matrícula de otra persona no puede apropiarse de ella sin acceso a ese buzón. Si el padrón trae el correo de la matrícula, el código va a ESE correo.
+app.post('/api/registro', limite, async (req, res) => {
   const { matricula, email, password } = req.body || {};
-  if (!matricula || !email || !password || password.length < 8) return res.status(400).json({ error: 'Completa matrícula, correo y una contraseña de 8+ caracteres.' });
+  if (!matricula || typeof password !== 'string' || password.length < 8) return res.status(400).json({ error: 'Completa matrícula, correo y una contraseña de 8+ caracteres.' });
   const p = one('SELECT * FROM padron WHERE matricula=?', String(matricula).trim());
   if (!p) return res.status(403).json({ error: 'Matrícula no válida: no aparece en el padrón de la Unidad Académica.' });
   if (one('SELECT 1 FROM users WHERE matricula=?', p.matricula)) return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta.' });
-  const r = run("INSERT INTO users(matricula,nombre,email,rol,pass_hash) VALUES(?,?,?,'estudiante',?)", p.matricula, p.nombre, String(email).trim().toLowerCase(), bcrypt.hashSync(password, 10));
-  const u = { id: Number(r.lastInsertRowid) }; abrir(res, u); res.json({ ok: true });
+  const correo = String(p.email || email || '').trim().toLowerCase();
+  if (!p.email) {
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo) || correo.length > 120) return res.status(400).json({ error: 'Escribe un correo electrónico válido.' });
+    if (!dominioPermitido(correo)) return res.status(400).json({ error: `Usa tu correo institucional (@${dominiosCorreo().join(' o @')}).` });
+  }
+  const falta = sinCorreo(); if (falta) return res.status(503).json({ error: falta });
+  const e = emitirCodigo('registro', p.matricula, correo, bcrypt.hashSync(password, 10)); if (e.error) return res.status(e.status).json({ error: e.error });
+  const ok = await enviarCodigo(correo, 'SAE · Código para crear tu cuenta', `Tu código de verificación es: ${e.codigo}\n\nCaduca en 15 minutos. Si no solicitaste una cuenta en el Sistema de Asesorías Estudiantil, ignora este correo.`);
+  if (!ok) { run('DELETE FROM codigos WHERE tipo=? AND matricula=?', 'registro', p.matricula); return res.status(502).json({ error: 'No pudimos enviar el correo. Intenta de nuevo en unos minutos.' }); }
+  res.json({ ok: true, pendiente: true, correo: enmascarar(correo) });
+});
+app.post('/api/registro/confirmar', limite, (req, res) => {
+  const matricula = String(req.body?.matricula ?? '').trim(), c = comprobarCodigo('registro', matricula, req.body?.codigo);
+  if (c.error) return res.status(c.status).json({ error: c.error });
+  const p = one('SELECT * FROM padron WHERE matricula=?', matricula);
+  if (!p) return res.status(403).json({ error: 'Matrícula no válida: no aparece en el padrón de la Unidad Académica.' });
+  let r; try { r = run("INSERT INTO users(matricula,nombre,email,rol,pass_hash) VALUES(?,?,?,'estudiante',?)", p.matricula, p.nombre, c.correo, c.pass_hash); }
+  catch { return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta.' }); }
+  run('DELETE FROM codigos WHERE tipo=? AND matricula=?', 'registro', matricula);
+  abrir(res, { id: Number(r.lastInsertRowid) }); res.json({ ok: true });
 });
 app.post('/api/login', limite, (req, res) => {
   const { matricula, password } = req.body || {}; const u = one('SELECT * FROM users WHERE matricula=?', String(matricula || '').trim());
@@ -163,6 +231,7 @@ if (require.main === module) {
     console.error('Error: en producción SESSION_SECRET debe ser una cadena propia, larga y aleatoria (mínimo 32 caracteres; no sirve el valor de ejemplo).\n  Genera una con: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
     process.exit(1);
   } else if (!secretoUsable(process.env.SESSION_SECRET)) console.log('Aviso: SESSION_SECRET no está definido (o es el de ejemplo): se usa un secreto temporal y las sesiones se cierran al reiniciar.');
+  if (process.env.NODE_ENV === 'production' && !mailer) console.error('Aviso: no hay SMTP configurado (SMTP_HOST). Sin correo nadie podrá registrarse: el código de verificación se envía por correo.');
   // Los datos de demostración (seed.js) traen usuarios con contraseñas conocidas: SOLO se cargan si se piden (npm run demo / SEED_DEMO=1) y nunca en producción.
   const demo = process.argv.includes('--demo') || /^(1|true|si|sí)$/i.test(process.env.SEED_DEMO || '');
   if (demo && process.env.NODE_ENV === 'production') { console.error('Error: los datos de demostración no se cargan con NODE_ENV=production (traen contraseñas conocidas).'); process.exit(1); }

@@ -87,11 +87,23 @@ function login(reg){ $('#app').innerHTML=`<section class="hero"><div><span class
 <p>Consulta la disponibilidad real de los docentes de la Unidad Académica de Economía, reserva un horario y recibe confirmación. Gratis y desde tu celular.</p></div>
 <form class="card" id="f"><h2>${reg?'Crear cuenta':'Iniciar sesión'}</h2>
 <label for="m">Matrícula o clave de docente</label><input id="m" required autocomplete="username">
-${reg?'<label for="e">Correo electrónico</label><input id="e" type="email" required autocomplete="email">':''}
+${reg?'<label for="e">Correo institucional</label><input id="e" type="email" required autocomplete="email">':''}
 <label for="p">Contraseña${reg?' (mínimo 8 caracteres)':''}</label><input id="p" type="password" required minlength="${reg?8:1}" autocomplete="${reg?'new-password':'current-password'}">
 <button class="gold" style="width:100%">${reg?'Crear cuenta':'Entrar'}</button>
 <p class="mut" style="text-align:center"><a href="#" onclick="login(${!reg});return false">${reg?'Ya tengo cuenta':'Soy estudiante y no tengo cuenta'}</a></p></form></section>`;
-  $('#f').onsubmit=async e=>{e.preventDefault();try{await api(reg?'/registro':'/login','POST',{matricula:$('#m').value,email:reg?$('#e').value:undefined,password:$('#p').value});await init()}catch(x){toast(x.message,1)}}}
+  $('#f').onsubmit=async e=>{e.preventDefault();try{const d={matricula:$('#m').value,email:reg?$('#e').value:undefined,password:$('#p').value};
+    const r=await api(reg?'/registro':'/login','POST',d);if(r.pendiente)return verificar(d,r.correo);await init()}catch(x){toast(x.message,1)}}}
+// Segundo paso del registro: el código de 6 dígitos que llegó al correo institucional (la cuenta se crea hasta confirmarlo).
+function verificar(d,correo){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Un paso más</span><h1>Revisa tu correo institucional.</h1>
+<p>Para confirmar que la matrícula es tuya te enviamos un código de 6 dígitos a <b>${esc(correo)}</b>. Caduca en 15 minutos.</p></div>
+<form class="card" id="v"><h2>Verificar correo</h2><label for="c">Código de 6 dígitos</label>
+<input id="c" required inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" autocomplete="one-time-code">
+<button class="gold" style="width:100%">Verificar y crear cuenta</button>
+<p class="mut" style="text-align:center"><a href="#" id="re">Reenviar el código</a> · <a href="#" id="at">Volver</a></p></form></section>`;
+  $('#c').focus();
+  $('#v').onsubmit=async e=>{e.preventDefault();try{await api('/registro/confirmar','POST',{matricula:d.matricula,codigo:$('#c').value});await init()}catch(x){toast(x.message,1)}};
+  $('#re').onclick=async e=>{e.preventDefault();try{await api('/registro','POST',d);toast('Te enviamos un código nuevo.')}catch(x){toast(x.message,1)}};
+  $('#at').onclick=e=>{e.preventDefault();login(true)}}
 async function catalogo(){ $('#app').innerHTML=`<h2>Docentes</h2><label for="b">Busca por docente o materia</label><input id="b" type="search" placeholder="Ej. Estadística"><div id="l" class="grid"></div><div id="det"></div>`;
   const pintar=async()=>{const d=await api('/docentes?q='+encodeURIComponent($('#b').value));
     $('#l').innerHTML=d.map(x=>`<div class="card"><div class="row"><div class="av">${esc(ini(x.nombre))}</div><div><b>${esc(x.nombre)}</b><div class="mut">${esc(x.cubiculo||'')}</div></div></div>

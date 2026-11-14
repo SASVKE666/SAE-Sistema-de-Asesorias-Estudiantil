@@ -1,6 +1,7 @@
 // Prueba integral del flujo completo (actividad 1.4.2 del EDT) con una BD temporal en memoria.
 process.env.DB_FILE = ':memory:';
 const test = require('node:test'), assert = require('node:assert');
+const correo = require('../pruebas-ayuda/correo')();
 const app = require('../server'); require('../seed')(app.db);
 let srv, base; const jar = {};
 const call = async (who, url, method = 'GET', body) => {
@@ -14,7 +15,7 @@ test.after(() => srv.close());
 test('matrícula fuera del padrón es rechazada', async () =>
   assert.equal((await call('x', '/api/registro', 'POST', { matricula: '99999999', email: 'a@b.mx', password: '12345678' })).status, 403));
 test('flujo: registro, agendar, doble reserva, confirmar, cancelar', async () => {
-  assert.equal((await call('est', '/api/registro', 'POST', { matricula: '24100001', email: 'ana@uan.edu.mx', password: 'segura1234' })).status, 200);
+  await correo.registrar((url, b) => call('est', url, 'POST', b), { matricula: '24100001', email: 'ana@uan.edu.mx', password: 'segura1234' });
   const docs = (await call('est', '/api/docentes?q=Estad')).json; assert.equal(docs.length, 1);
   const hs = (await call('est', `/api/docentes/${docs[0].id}/horarios`)).json;
   const r1 = await call('est', '/api/asesorias', 'POST', { horario_id: hs[0].id, materia: 'Estadística', duda: 'Intervalos de confianza' });

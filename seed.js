@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 module.exports = db => {
   if (db.prepare('SELECT COUNT(*) n FROM users').get().n) return;
   const run = (s, ...p) => db.prepare(s).run(...p), h = p => bcrypt.hashSync(p, 10);
-  [['24100001', 'Ana Lucía Torres'], ['24100002', 'Diego Ramos Ortiz'], ['24100003', 'Marisol Pérez Cruz']].forEach(p => run('INSERT INTO padron VALUES(?,?)', ...p));
+  [['24100001', 'Ana Lucía Torres'], ['24100002', 'Diego Ramos Ortiz'], ['24100003', 'Marisol Pérez Cruz']].forEach(p => run('INSERT INTO padron(matricula,nombre) VALUES(?,?)', ...p));
   run("INSERT INTO users(matricula,nombre,email,rol,pass_hash) VALUES('SEC001','Secretaría de Economía','secretaria@uan.edu.mx','secretaria',?)", h('Secretaria2026'));
   const docs = [['DOC001', 'Dr. Héctor Salazar', 'Microeconomía, Economía Matemática', 'Cubículo 4'],
     ['DOC002', 'Mtra. Patricia Lugo', 'Contabilidad, Finanzas Corporativas', 'Cubículo 7'], ['DOC003', 'Dr. Ramón Villaseñor', 'Estadística, Econometría', 'Cubículo 2']];
