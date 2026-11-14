@@ -38,6 +38,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 - **Registro solo con matrícula del padrón** (actividad 1.3.1). Docentes y secretaría se dan de alta desde `seed.js`.
 - **Contraseñas** con bcrypt; **sesión** en cookie firmada, `httpOnly`, 8 horas; freno a fuerza bruta: solo cuentan los **fallos**, por matrícula + IP (8 en 10 min; el acceso correcto limpia el contador) y un tope amplio de 100 fallos por IP. Así quien se equivoca no bloquea a los demás aunque compartan la red de la facultad.
 - **Consultas parametrizadas** (evita inyección SQL) y escape de HTML en la interfaz (evita XSS).
+- **Tope de reservas:** cada estudiante puede tener como máximo 2 asesorías activas (`MAX_ASESORIAS_ACTIVAS`); la tercera recibe 409 con el mensaje "Ya tienes 2 asesorías activas…". Cancelar o que se realice la asesoría libera el cupo. La revisión y la reserva ocurren en el mismo turno síncrono, así que solicitudes simultáneas no lo rebasan.
 - **Horarios vencidos:** un horario que ya empezó no se puede reservar (400, sin consumirlo) y los listados no lo ofrecen; se calcula en la hora local de la facultad (`ZONA_HORARIA`), no en UTC.
 - **Reserva atómica:** `UPDATE horarios SET libre=0 WHERE id=? AND libre=1`; si dos estudiantes pulsan a la vez, solo uno gana.
 - **Permisos por rol:** el estudiante agenda y cancela las suyas; el docente confirma, realiza o cancela las suyas; la secretaría ve todo y la bitácora.
@@ -82,6 +83,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Correo real | sin SMTP: solo bitácora |
 | `DB_FILE` | Ruta de la base | `data/sae.db` |
 | `ZONA_HORARIA` | Zona horaria IANA de la facultad. Los horarios se guardan en hora local; con esta zona se decide cuáles ya pasaron (no se pueden reservar ni se ofrecen) | `America/Mazatlan` |
+| `MAX_ASESORIAS_ACTIVAS` | Máximo de asesorías activas por estudiante (pendientes o confirmadas cuyo horario aún no llega); evita que una cuenta acapare los horarios de un docente. Las canceladas, las realizadas y las que ya pasaron no cuentan | `2` |
 | `TRUST_PROXY` | Número de proxies de confianza delante de la app (ej. `1` con Nginx); necesario para que el límite de intentos vea la IP real | sin proxy: desactivado |
 
 ## 4. Puesta en producción (resumen)

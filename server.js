@@ -104,12 +104,20 @@ app.get('/api/docentes', auth(), (req, res) => {
 app.get('/api/docentes/:id/horarios', auth(), (req, res) =>
   res.json(q(`SELECT h.id,h.fecha,h.hora FROM horarios h WHERE h.docente_id=? AND h.libre=1 AND ${futuro('h')} ORDER BY h.fecha,h.hora`, req.params.id, ...paramsFuturo())));
 
+// Tope de asesorías ACTIVAS por estudiante (pendientes o confirmadas cuyo horario aún no llega): evita que una cuenta acapare los horarios de un docente.
+// Se puede ajustar con MAX_ASESORIAS_ACTIVAS; un valor inválido vuelve a 2. Las canceladas, las realizadas y las que ya pasaron no cuentan.
+const maxActivas = () => { const n = parseInt(process.env.MAX_ASESORIAS_ACTIVAS, 10); return n >= 1 ? n : 2; };
+const activas = estudianteId => one(`SELECT COUNT(*) n FROM asesorias a JOIN horarios h ON h.id=a.horario_id
+  WHERE a.estudiante_id=? AND a.estado IN ('pendiente','confirmada') AND ${futuro('h')}`, estudianteId, ...paramsFuturo()).n;
 app.post('/api/asesorias', auth('estudiante'), async (req, res) => {
   const { horario_id, materia, duda } = req.body || {};
   if (!horario_id || !materia?.trim() || !duda?.trim()) return res.status(400).json({ error: 'Indica horario, materia y tu duda.' });
   const h = one('SELECT * FROM horarios WHERE id=?', horario_id);
   if (!h) return res.status(404).json({ error: 'Horario inexistente.' });
   if (yaPaso(h.fecha, h.hora)) return res.status(400).json({ error: 'Ese horario ya pasó. Elige otro.' });   // antes de reservarlo: no consume el horario
+  // Revisión del tope + reserva ocurren en el mismo turno síncrono (sin await entre medias), así que dos solicitudes simultáneas no lo rebasan.
+  const max = maxActivas();
+  if (activas(req.user.id) >= max) return res.status(409).json({ error: `Ya tienes ${max} ${max === 1 ? 'asesoría activa' : 'asesorías activas'}. Cancela una o espera a que se realice para pedir otra.` });
   // Validación de disponibilidad atómica: solo se reserva si sigue libre
   const r = run('UPDATE horarios SET libre=0 WHERE id=? AND libre=1', horario_id);
   if (!r.changes) return res.status(409).json({ error: 'Ese horario ya fue ocupado. Elige otro.' });
