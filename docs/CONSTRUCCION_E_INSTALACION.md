@@ -64,7 +64,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
    cd SAE-Sistema-de-Asesorias-Estudiantil-
    ```
 3. Instala dependencias: `npm install`
-4. (Opcional) copia `.env.example` a `.env` y ajusta valores; en PowerShell puedes definirlos con `$env:SESSION_SECRET="..."`.
+4. (Opcional) copia `.env.example` a `.env` como referencia de las variables. **La aplicación no lee `.env` por sí sola**: defínelas en el entorno (en PowerShell: `$env:SESSION_SECRET="..."`) o arranca con `node --env-file=.env server.js`.
 5. Inicia con datos de demostración: `npm run demo` → abre http://localhost:3000. (`npm start` a secas arranca con la base **vacía**, sin usuarios: es lo que se usa en producción.)
 6. Verifica con las pruebas: `npm test` (todas deben pasar).
 
@@ -80,7 +80,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 |---|---|---|
 | `PORT` | Puerto | 3000 |
 | `BASE_URL` | URL pública (la usa el QR y activa cookie `secure` si empieza con `https`) | http://localhost:PORT |
-| `SESSION_SECRET` | Firma de sesiones. **Obligatorio cambiarlo en producción** | valor de ejemplo |
+| `SESSION_SECRET` | Firma de sesiones. **Obligatorio en producción**: con `NODE_ENV=production` el servidor no arranca si falta, es un valor de ejemplo o tiene menos de 32 caracteres. Fuera de producción, sin él se usa un secreto aleatorio temporal (las sesiones se cierran al reiniciar). Genera uno con `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` | sin valor: temporal (no hay secreto conocido) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Correo real | sin SMTP: solo bitácora |
 | `DB_FILE` | Ruta de la base | `data/sae.db` |
 | `ZONA_HORARIA` | Zona horaria IANA de la facultad. Los horarios se guardan en hora local; con esta zona se decide cuáles ya pasaron (no se pueden reservar ni se ofrecen) | `America/Mazatlan` |
@@ -89,14 +89,14 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 
 ## 4. Puesta en producción (resumen)
 1. Servidor con Node 22.5+ (VPS o hosting con Node). Dominio y **certificado SSL** (por ejemplo con Nginx + Let's Encrypt como proxy hacia el puerto 3000).
-2. Define `BASE_URL=https://tu-dominio`, `TRUST_PROXY=1` (si usas Nginx), un `SESSION_SECRET` largo y aleatorio y las variables SMTP (el correo institucional o un servicio SMTP).
+2. Define `BASE_URL=https://tu-dominio`, `TRUST_PROXY=1` (si usas Nginx), un `SESSION_SECRET` propio de 32 caracteres o más (sin él, en producción el servidor se niega a arrancar) y las variables SMTP (el correo institucional o un servicio SMTP).
 3. **Sin datos de demostración:** arranca con `NODE_ENV=production npm start` (la base queda vacía; no se crean usuarios con contraseñas conocidas). Crea la cuenta de la secretaría y las de los docentes con tu propia contraseña (se pide por teclado, sin mostrarse; mínimo 10 caracteres y no puede ser una de las de demostración):
    ```bash
    npm run crear-usuario -- secretaria SEC001 "Secretaría de Economía" secretaria@uan.edu.mx
    npm run crear-usuario -- docente DOC010 "Dra. Ana Pérez" ana@uan.edu.mx --materias "Estadística, Econometría" --cubiculo "Cubículo 3"
    ```
    Para automatizarlo (sin terminal) define la contraseña en la variable `SAE_PASSWORD`. El **padrón de estudiantes** todavía no tiene carga por archivo: ver "Límites conocidos". Si probaste con `npm run demo` en esa misma base, bórrala (`data/sae.db`) antes de publicar.
-4. Mantén el proceso activo con `pm2 start server.js --name sae`. Respalda `data/sae.db` periódicamente.
+4. La aplicación **no lee el archivo `.env` por sí sola**: define las variables en el entorno del servicio (pm2 `ecosystem.config.js`, systemd `Environment=`, etc.) o arranca con `node --env-file=.env server.js`. Mantén el proceso activo con `pm2 start server.js --name sae`. Respalda `data/sae.db` periódicamente.
 5. Genera el QR desde la sección "Código QR" e imprímelo para carteles.
 
 ## 5. Publicar este proyecto en GitHub
