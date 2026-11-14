@@ -3,7 +3,12 @@ const express = require('express'), bcrypt = require('bcryptjs'), crypto = requi
 const nodemailer = require('nodemailer'), QRCode = require('qrcode'), path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 const PORT = process.env.PORT || 3000, BASE = process.env.BASE_URL || `http://localhost:${PORT}`;
-const SECRET = process.env.SESSION_SECRET || 'cambia-este-secreto-en-produccion';
+// Secreto con el que se firman las sesiones. Cualquiera que lo conozca puede fabricar una sesión de cualquier usuario (incluida la secretaría),
+// así que NO hay valor por defecto: sin un secreto propio se usa uno aleatorio temporal (las sesiones se cierran al reiniciar) y en producción el servidor no arranca.
+const SECRETO_DE_EJEMPLO = /pon-aqui|cambia-este/i;                                           // valores de ejemplo publicados en el repositorio y en .env.example
+const secretoUsable = v => typeof v === 'string' && v.trim() !== '' && !SECRETO_DE_EJEMPLO.test(v);
+const secretoFuerte = v => secretoUsable(v) && v.length >= 32;
+const SECRET = secretoUsable(process.env.SESSION_SECRET) ? process.env.SESSION_SECRET : crypto.randomBytes(32).toString('hex');
 const db = new DatabaseSync(process.env.DB_FILE || path.join(__dirname, 'data', 'sae.db'));
 db.exec(`PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS padron(matricula TEXT PRIMARY KEY, nombre TEXT NOT NULL);
@@ -154,6 +159,10 @@ app.get('/api/notificaciones', auth('secretaria'), (req, res) => res.json(q('SEL
 app.get('/api/qr', async (req, res) => res.json({ url: BASE, png: await QRCode.toDataURL(BASE, { margin: 1, width: 320 }) }));
 app.use(express.static(path.join(__dirname, 'public')));
 if (require.main === module) {
+  if (process.env.NODE_ENV === 'production' && !secretoFuerte(process.env.SESSION_SECRET)) {
+    console.error('Error: en producción SESSION_SECRET debe ser una cadena propia, larga y aleatoria (mínimo 32 caracteres; no sirve el valor de ejemplo).\n  Genera una con: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
+    process.exit(1);
+  } else if (!secretoUsable(process.env.SESSION_SECRET)) console.log('Aviso: SESSION_SECRET no está definido (o es el de ejemplo): se usa un secreto temporal y las sesiones se cierran al reiniciar.');
   // Los datos de demostración (seed.js) traen usuarios con contraseñas conocidas: SOLO se cargan si se piden (npm run demo / SEED_DEMO=1) y nunca en producción.
   const demo = process.argv.includes('--demo') || /^(1|true|si|sí)$/i.test(process.env.SEED_DEMO || '');
   if (demo && process.env.NODE_ENV === 'production') { console.error('Error: los datos de demostración no se cargan con NODE_ENV=production (traen contraseñas conocidas).'); process.exit(1); }

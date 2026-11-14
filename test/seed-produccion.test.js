@@ -11,7 +11,7 @@ test.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 // Arranca server.js con una base nueva; devuelve lo que imprimió, el código de salida (si terminó solo) y la base ya cerrada.
 function arrancar(args = [], env = {}) {
   const DB_FILE = path.join(dir, `b${++n}.db`);
-  const e = { ...process.env, DB_FILE, PORT: '0', ...env }; for (const k of ['SEED_DEMO', 'NODE_ENV']) if (!(k in env)) delete e[k];
+  const e = { ...process.env, DB_FILE, PORT: '0', SESSION_SECRET: 'x'.repeat(40), ...env }; for (const k of ['SEED_DEMO', 'NODE_ENV']) if (!(k in env)) delete e[k];
   return new Promise(ok => {
     const p = spawn(process.execPath, [...NODE, 'server.js', ...args], { cwd: RAIZ, env: e });
     let out = '', err = '', listo = false;
