@@ -1,5 +1,5 @@
 // Un horario que ya empezó o ya pasó no se puede reservar, y los listados usan el mismo criterio (hora LOCAL de la facultad, no UTC).
-process.env.DB_FILE = ':memory:'; delete process.env.ZONA_HORARIA;
+process.env.DB_FILE = ':memory:'; delete process.env.ZONA_HORARIA; process.env.MAX_ASESORIAS_ACTIVAS = '50';   // estas pruebas reservan varias veces con la misma cuenta; el tope se prueba aparte
 const test = require('node:test'), assert = require('node:assert');
 const app = require('../server'); require('../seed')(app.db);
 let srv, base, cookie;
