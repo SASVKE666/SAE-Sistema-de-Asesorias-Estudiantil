@@ -44,12 +44,13 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 - **Horarios vencidos:** un horario que ya empezó no se puede reservar (400, sin consumirlo) y los listados no lo ofrecen; se calcula en la hora local de la facultad (`ZONA_HORARIA`), no en UTC.
 - **Reserva atómica:** `UPDATE horarios SET libre=0 WHERE id=? AND libre=1`; si dos estudiantes pulsan a la vez, solo uno gana.
 - **Permisos por rol:** el estudiante agenda y cancela las suyas; el docente confirma, realiza o cancela las suyas; la secretaría ve todo y la bitácora.
+- **Recuperación de contraseña** (estudiantes, docentes y secretaría): "Olvidé mi contraseña" envía un código de 6 dígitos al correo de la cuenta (mismas reglas que el registro: 15 min, 5 intentos, 1 envío por minuto, 5 por hora). La respuesta es la misma exista o no la matrícula, así que no revela quién tiene cuenta. Al cambiar la contraseña se **cierran todas las sesiones abiertas** y se avisa por correo; docentes y secretaría necesitan 10 caracteres o más y no pueden usar las contraseñas de demostración. Los intentos fallidos de recuperación llevan su propio cupo (no se mezclan con los de iniciar sesión).
 - **Correos:** si hay SMTP configurado se envían; si no, se guardan en la bitácora con "pendiente" para que el sistema funcione igual en pruebas.
 
 ### Correspondencia con el EDT
 | EDT | Dónde está |
 |---|---|
-| 1.3.1 Registro y acceso | `/api/registro`, `/api/login`, `padron` |
+| 1.3.1 Registro y acceso | `/api/registro`, `/api/registro/confirmar`, `/api/login`, `/api/recuperar`, `/api/recuperar/confirmar`, `padron`, `codigos` |
 | 1.3.2 Catálogo de docentes | `/api/docentes?q=` |
 | 1.3.3 Agendamiento | `/api/asesorias` (POST), `/api/horarios` |
 | 1.3.4 Confirmaciones | función `notificar()`, tabla `notificaciones` |
@@ -114,6 +115,6 @@ Si GitHub pide contraseña, usa un *Personal Access Token* (Settings → Develop
 ## 6. Límites conocidos y siguientes pasos
 - No hay carga de fotos de docentes (se muestran iniciales); el campo `foto` ya existe en la base.
 - El alta de docentes y secretaría se hace con `npm run crear-usuario`; la **carga del padrón de estudiantes** y el alta masiva de docentes aún no tienen herramienta (un panel de administración o una carga por CSV sería la siguiente mejora).
-- Sin recuperación de contraseña por correo.
+- La recuperación de contraseña depende del correo guardado en la cuenta: quien perdió también el acceso a ese buzón debe pedir a la secretaría que lo corrija (aún no hay panel para ello).
 - La verificación del registro prueba que quien se registra controla **un** buzón del dominio institucional, no que sea el dueño de la matrícula: si el padrón no trae el correo de cada matrícula, alguien con cuenta institucional podría registrar la de otro alumno antes que él. Lo ideal es cargar `padron.email` con el correo institucional de cada estudiante (así el código solo llega a su dueño); esa carga aún no tiene herramienta.
 - Las pruebas de aceptación con usuarios reales (1.4.3) están por realizarse.
