@@ -7,6 +7,7 @@
     "start": "node --no-warnings server.js",
     "demo": "node --no-warnings server.js --demo",
     "crear-usuario": "node --no-warnings scripts/crear-usuario.js",
+    "cargar-padron": "node --no-warnings scripts/cargar-padron.js",
     "test": "node --no-warnings --test"
   },
   "author": "",

@@ -99,7 +99,12 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
    npm run crear-usuario -- secretaria SEC001 "Secretaría de Economía" secretaria@uan.edu.mx
    npm run crear-usuario -- docente DOC010 "Dra. Ana Pérez" ana@uan.edu.mx --materias "Estadística, Econometría" --cubiculo "Cubículo 3"
    ```
-   Para automatizarlo (sin terminal) define la contraseña en la variable `SAE_PASSWORD`. El **padrón de estudiantes** todavía no tiene carga por archivo: ver "Límites conocidos". Si probaste con `npm run demo` en esa misma base, bórrala (`data/sae.db`) antes de publicar.
+   Para automatizarlo (sin terminal) define la contraseña en la variable `SAE_PASSWORD`. Después **carga el padrón de estudiantes** desde un CSV con las columnas `matricula,nombre,correo` (el correo institucional de cada alumno; en Excel guárdalo como "CSV UTF-8"):
+   ```bash
+   npm run cargar-padron -- alumnos.csv --simular   # solo revisa y dice qué haría
+   npm run cargar-padron -- alumnos.csv             # carga o actualiza (no borra a nadie)
+   ```
+   Si alguna fila tiene un error no se carga nada y se listan todos con su línea. **Conviene que todas las filas traigan el correo**: así el código de verificación del registro solo llega al dueño de la matrícula. Si probaste con `npm run demo` en esa misma base, bórrala (`data/sae.db`) antes de publicar.
 4. La aplicación **no lee el archivo `.env` por sí sola**: define las variables en el entorno del servicio (pm2 `ecosystem.config.js`, systemd `Environment=`, etc.) o arranca con `node --env-file=.env server.js`. Mantén el proceso activo con `pm2 start server.js --name sae`. Respalda `data/sae.db` periódicamente.
 5. Genera el QR desde la sección "Código QR" e imprímelo para carteles.
 
@@ -115,7 +120,7 @@ Si GitHub pide contraseña, usa un *Personal Access Token* (Settings → Develop
 
 ## 6. Límites conocidos y siguientes pasos
 - No hay carga de fotos de docentes (se muestran iniciales); el campo `foto` ya existe en la base.
-- El alta de docentes y secretaría se hace con `npm run crear-usuario`; la **carga del padrón de estudiantes** y el alta masiva de docentes aún no tienen herramienta (un panel de administración o una carga por CSV sería la siguiente mejora).
+- El alta de docentes y secretaría se hace con `npm run crear-usuario`; el alta masiva de docentes aún no tiene herramienta (un panel de administración o una carga por CSV sería la siguiente mejora). El padrón de estudiantes se carga con `npm run cargar-padron`; para quitar a alguien del padrón todavía hay que hacerlo directamente en la base.
 - La recuperación de contraseña depende del correo guardado en la cuenta: quien perdió también el acceso a ese buzón debe pedir a la secretaría que lo corrija (aún no hay panel para ello).
-- La verificación del registro prueba que quien se registra controla **un** buzón del dominio institucional, no que sea el dueño de la matrícula: si el padrón no trae el correo de cada matrícula, alguien con cuenta institucional podría registrar la de otro alumno antes que él. Lo ideal es cargar `padron.email` con el correo institucional de cada estudiante (así el código solo llega a su dueño); esa carga aún no tiene herramienta.
+- La verificación del registro prueba que quien se registra controla **un** buzón del dominio institucional, no que sea el dueño de la matrícula: si el padrón no trae el correo de cada matrícula, alguien con cuenta institucional podría registrar la de otro alumno antes que él. Por eso conviene cargar el padrón con el correo institucional de cada estudiante (`npm run cargar-padron`): así el código solo llega a su dueño.
 - Las pruebas de aceptación con usuarios reales (1.4.3) están por realizarse.
