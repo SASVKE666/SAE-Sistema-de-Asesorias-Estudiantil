@@ -63,8 +63,8 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 1. Instala **Node.js 22.5 o superior** desde https://nodejs.org (LTS reciente). Verifica: `node -v`.
 2. Instala **Git** y clona el repositorio:
    ```bash
-   git clone https://github.com/SASVKE666/SAE-Sistema-de-Asesorias-Estudiantil-.git
-   cd SAE-Sistema-de-Asesorias-Estudiantil-
+   git clone https://github.com/SASVKE666/SAE-Sistema-de-Asesorias-Estudiantil.git
+   cd SAE-Sistema-de-Asesorias-Estudiantil
    ```
 3. Instala dependencias: `npm install`
 4. (Opcional) copia `.env.example` a `.env` como referencia de las variables. **La aplicación no lee `.env` por sí sola**: defínelas en el entorno (en PowerShell: `$env:SESSION_SECRET="..."`) o arranca con `node --env-file=.env server.js`.
@@ -113,7 +113,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 git init -b main
 git add .
 git commit -m "SAE: primera versión (EDT hasta pruebas)"
-git remote add origin https://github.com/SASVKE666/SAE-Sistema-de-Asesorias-Estudiantil-.git
+git remote add origin https://github.com/SASVKE666/SAE-Sistema-de-Asesorias-Estudiantil.git
 git push -u origin main
 ```
 Si GitHub pide contraseña, usa un *Personal Access Token* (Settings → Developer settings) o GitHub Desktop.

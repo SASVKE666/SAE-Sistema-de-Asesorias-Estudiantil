@@ -42,7 +42,7 @@ En el primer estudio de campo se encuestó a **24 estudiantes y 12 docentes**:
 | Hallazgo | Resultado |
 |---|---|
 | Estudiantes que han solicitado una asesoría alguna vez | 33.3 % |
-| Estudiantes que nunca han asistido a una asesoría | 66.6 % |
+| Estudiantes que nunca han asistido a una asesoría | 66.7 % |
 | Desconocían el servicio o no sabían dónde se toman | 25 % |
 | Falta de tiempo o dificultad para acudir | 20.8 % |
 | Docentes que sí imparten asesorías | 91.7 % |
@@ -102,7 +102,7 @@ La guía técnica detallada está en [`CONSTRUCCION_E_INSTALACION.md`](CONSTRUCC
 - **Tecnológico:** el proceso se adapta a los hábitos móviles de los estudiantes.
 
 ## 11. Conclusión
-SAE existe porque el problema de las asesorías en la UAE es de **comunicación y organización**, no de falta de servicio ni de docentes dispuestos. La evidencia del diagnóstico (66.6 % sin uso frente a 91.7 % de docentes que sí asesoran) respalda construir un canal único, gratuito y trazable. El prototipo cubre el alcance definido hasta pruebas; su valor real se confirmará con la aceptación de usuarios y la medición del uso tras la implementación, que son los siguientes pasos.
+SAE existe porque el problema de las asesorías en la UAE es de **comunicación y organización**, no de falta de servicio ni de docentes dispuestos. La evidencia del diagnóstico (66.7 % sin uso frente a 91.7 % de docentes que sí asesoran) respalda construir un canal único, gratuito y trazable. El prototipo cubre el alcance definido hasta pruebas; su valor real se confirmará con la aceptación de usuarios y la medición del uso tras la implementación, que son los siguientes pasos.
 
 ## 12. Referencias
 *Pendiente: agregar en formato APA las fuentes que el equipo citó en su SDP, encuestas y estudios previos (normativa de la UAN sobre carga horaria y asesorías, bibliografía sobre tutoría y asesoría académica, documentación de las tecnologías usadas). No se incluyen referencias inventadas.*
