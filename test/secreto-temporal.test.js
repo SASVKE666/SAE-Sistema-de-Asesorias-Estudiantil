@@ -2,14 +2,16 @@
 const test = require('node:test'), assert = require('node:assert'), crypto = require('node:crypto');
 const CONOCIDOS = ['cambia-este-secreto-en-produccion', 'pon-aqui-una-cadena-larga-y-aleatoria', '', 'secret', 'undefined'];   // el valor por defecto anterior, el de .env.example y otros típicos
 const firmar = (d, secreto) => { const p = Buffer.from(JSON.stringify(d)).toString('base64url'); return p + '.' + crypto.createHmac('sha256', secreto).update(p).digest('base64url'); };
-const sesion = secreto => 'sae=' + firmar({ uid: 1, exp: Date.now() + 36e5 }, secreto);              // uid 1 = la secretaría (SEC001) en los datos de demostración
+let dbActual;                                                                          // base de la instancia cargada más recientemente (para la versión de sesión)
+const versionPass = h => crypto.createHash('sha256').update(h).digest('base64url').slice(0, 16);
+const sesion = secreto => 'sae=' + firmar({ uid: 1, exp: Date.now() + 36e5, v: versionPass(dbActual.prepare('SELECT pass_hash FROM users WHERE id=1').get().pass_hash) }, secreto);   // uid 1 = la secretaría (SEC001) en los datos de demostración
 
 // Carga una instancia NUEVA del servidor con ese SESSION_SECRET (o sin él), base en memoria y datos de demostración.
 async function instancia(secreto) {
   if (secreto === undefined) delete process.env.SESSION_SECRET; else process.env.SESSION_SECRET = secreto;
   process.env.DB_FILE = ':memory:'; delete process.env.NODE_ENV;
   delete require.cache[require.resolve('../server')];
-  const app = require('../server'); require('../seed')(app.db);
+  const app = require('../server'); require('../seed')(app.db); dbActual = app.db;
   const srv = await new Promise(ok => { const s = app.listen(0, () => ok(s)); });
   const base = 'http://localhost:' + srv.address().port;
   return { srv, yo: async cookie => (await (await fetch(base + '/api/me', { headers: { cookie } })).json()).user,
