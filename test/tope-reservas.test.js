@@ -1,6 +1,7 @@
 // Tope de asesorías activas por estudiante (por defecto 2): una cuenta no puede acaparar los horarios de un docente.
 process.env.DB_FILE = ':memory:'; delete process.env.MAX_ASESORIAS_ACTIVAS;
 const test = require('node:test'), assert = require('node:assert');
+const correo = require('../pruebas-ayuda/correo')();
 const app = require('../server'); require('../seed')(app.db);
 let srv, base; const db = app.db;
 const cliente = () => {                                                         // cada cliente guarda su propia cookie de sesión
@@ -13,7 +14,7 @@ const cliente = () => {                                                         
   c.reservar = id => c.call('/api/asesorias', 'POST', { horario_id: id, materia: 'Estadística', duda: 'Duda de prueba' });
   return c;
 };
-const estudiante = async (matricula) => { const c = cliente(); const r = await c.call('/api/registro', 'POST', { matricula, email: matricula + '@uan.edu.mx', password: 'segura1234' }); assert.equal(r.status, 200); return c; };
+const estudiante = async (matricula) => { const c = cliente(); await correo.registrar((url, b) => c.call(url, 'POST', b), { matricula, email: matricula + '@uan.edu.mx', password: 'segura1234' }); return c; };
 const docente = async () => { const c = cliente(); assert.equal((await c.call('/api/login', 'POST', { matricula: 'DOC001', password: 'Docente2026' })).status, 200); return c; };
 const libres = docenteId => db.prepare("SELECT id FROM horarios WHERE docente_id=? AND libre=1 AND fecha>date('now') ORDER BY fecha,hora").all(docenteId).map(h => h.id);
 const estadoDe = id => db.prepare('SELECT estado FROM asesorias WHERE id=?').get(id).estado;
@@ -69,7 +70,7 @@ test('una asesoría pendiente cuyo horario ya pasó no cuenta (no bloquea al alu
 });
 
 test('solicitudes simultáneas no rebasan el tope', async () => {
-  db.prepare("INSERT INTO padron VALUES('24100099','Prueba Rápida')").run();
+  db.prepare("INSERT INTO padron(matricula,nombre) VALUES('24100099','Prueba Rápida')").run();
   const rapido = await estudiante('24100099'), ids = libres(2).slice(0, 6);
   assert.ok(ids.length >= 4);
   const r = await Promise.all(ids.map(id => rapido.reservar(id)));
@@ -80,7 +81,7 @@ test('solicitudes simultáneas no rebasan el tope', async () => {
 test('MAX_ASESORIAS_ACTIVAS ajusta el tope, y un valor inválido vuelve a 2', async t => {
   const prueba = async (valor, esperadas, matricula) => {
     if (valor === undefined) delete process.env.MAX_ASESORIAS_ACTIVAS; else process.env.MAX_ASESORIAS_ACTIVAS = valor;
-    db.prepare('INSERT INTO padron VALUES(?,?)').run(matricula, 'Alumno ' + matricula);
+    db.prepare('INSERT INTO padron(matricula,nombre) VALUES(?,?)').run(matricula, 'Alumno ' + matricula);
     const c = await estudiante(matricula), r = [];
     for (const id of libres(3).slice(0, 5)) r.push((await c.reservar(id)).status);
     assert.equal(r.filter(s => s === 200).length, esperadas, `MAX=${valor}: reservas logradas`);
@@ -88,7 +89,7 @@ test('MAX_ASESORIAS_ACTIVAS ajusta el tope, y un valor inválido vuelve a 2', as
   };
   try {
     await prueba('3', 3, '24100101');
-    process.env.MAX_ASESORIAS_ACTIVAS = '1'; db.prepare("INSERT INTO padron VALUES('24100102','Uno')").run();
+    process.env.MAX_ASESORIAS_ACTIVAS = '1'; db.prepare("INSERT INTO padron(matricula,nombre) VALUES('24100102','Uno')").run();
     const c = await estudiante('24100102'); assert.equal((await c.reservar(libres(3)[0])).status, 200);
     const x = await c.reservar(libres(3)[0]); assert.equal(x.status, 409); assert.match(x.json.error, /Ya tienes 1 asesoría activa\./, 'singular correcto');
     for (const [i, v] of ['abc', '0', '-4', ''].entries()) await prueba(v, 2, '2410020' + i);

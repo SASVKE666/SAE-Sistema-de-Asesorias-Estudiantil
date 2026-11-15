@@ -1,6 +1,7 @@
 // Un horario que ya empezó o ya pasó no se puede reservar, y los listados usan el mismo criterio (hora LOCAL de la facultad, no UTC).
 process.env.DB_FILE = ':memory:'; delete process.env.ZONA_HORARIA; process.env.MAX_ASESORIAS_ACTIVAS = '50';   // estas pruebas reservan varias veces con la misma cuenta; el tope se prueba aparte
 const test = require('node:test'), assert = require('node:assert');
+const correo = require('../pruebas-ayuda/correo')();
 const app = require('../server'); require('../seed')(app.db);
 let srv, base, cookie;
 const call = async (url, method = 'GET', body) => {
@@ -16,7 +17,7 @@ const lista = async () => (await call(`/api/docentes/${DOC}/horarios`)).json.map
 // Mazatlán/Nayarit es UTC-7 todo el año: 2026-11-13T20:00Z = 13:00 locales del 13 de noviembre.
 const ahora = (t, iso) => t.mock.method(Date, 'now', () => Date.parse(iso));
 test.before(async () => { await new Promise(ok => { srv = app.listen(0, () => { base = 'http://localhost:' + srv.address().port; ok(); }); });
-  assert.equal((await call('/api/registro', 'POST', { matricula: '24100001', email: 'ana@uan.edu.mx', password: 'segura1234' })).status, 200); });
+  await correo.registrar((url, b) => call(url, 'POST', b), { matricula: '24100001', email: 'ana@uan.edu.mx', password: 'segura1234' }); });
 test.after(() => srv.close());
 
 test('un horario de 2020 se rechaza con 400, no se consume y no genera notificaciones', async () => {
