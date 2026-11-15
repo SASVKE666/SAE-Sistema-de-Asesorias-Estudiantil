@@ -2,7 +2,7 @@
 Plataforma web para agendar y dar seguimiento a las asesorías académicas de la Unidad Académica de Economía, UAN.
 
 - **Estudiantes:** buscan docente o materia, ven horarios libres, agendan y reciben confirmación.
-- **Docentes:** publican disponibilidad, confirman y marcan asesorías realizadas.
+- **Docentes:** publican su disponibilidad (horarios sueltos o repetidos cada semana), confirman y marcan asesorías realizadas.
 - **Secretaría:** recibe copia de cada cita y consulta el historial.
 
 ```bash

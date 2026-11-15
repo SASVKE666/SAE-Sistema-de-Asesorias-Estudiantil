@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS codigos(tipo TEXT NOT NULL, matricula TEXT NOT NULL, 
   intentos INTEGER NOT NULL DEFAULT 0, expira INTEGER NOT NULL, creado INTEGER NOT NULL, envios INTEGER NOT NULL DEFAULT 1, ventana INTEGER NOT NULL,
   PRIMARY KEY(tipo, matricula));`);
 if (!db.prepare('PRAGMA table_info(padron)').all().some(c => c.name === 'email')) db.exec('ALTER TABLE padron ADD COLUMN email TEXT');   // bases creadas antes de existir esa columna
+// Horarios recurrentes: una "serie" es la regla semanal con la que el docente generó varios horarios (días, horas, duración y fechas).
+db.exec(`CREATE TABLE IF NOT EXISTS series(id INTEGER PRIMARY KEY, docente_id INTEGER NOT NULL REFERENCES docentes(id), dias TEXT NOT NULL, inicio TEXT NOT NULL, fin TEXT NOT NULL,
+  duracion INTEGER NOT NULL, desde TEXT NOT NULL, hasta TEXT NOT NULL, creada TEXT DEFAULT CURRENT_TIMESTAMP);`);
+if (!db.prepare('PRAGMA table_info(horarios)').all().some(c => c.name === 'serie_id')) db.exec('ALTER TABLE horarios ADD COLUMN serie_id INTEGER');
 // Las fechas y horas de los horarios son hora local de la Unidad Académica (no UTC): "ahora" se calcula en esa zona (ZONA_HORARIA, por defecto Nayarit/Pacífico).
 const ZONA_DEFECTO = 'America/Mazatlan';
 function ahoraLocal() {
@@ -254,11 +258,85 @@ app.patch('/api/asesorias/:id', auth('estudiante', 'docente'), async (req, res) 
   await notificar(d.id, [d.est_email, d.doc_email, ...secretarias()], `SAE · Asesoría #${d.id} ${est}`, `La asesoría de ${d.materia} (${d.fecha} ${d.hora}) quedó ${est}.`);
   res.json({ ok: true });
 });
+// ---- Disponibilidad del docente: horarios sueltos y series semanales ----
+// Cada horario es un bloque que EMPIEZA a esa hora (fecha y hora locales). Un horario retirado que tuvo asesorías (canceladas) no se borra para conservar el historial:
+// queda con libre=0 y sin asesoría viva, y no aparece en ninguna lista; si se vuelve a agregar, se reactiva.
+const pad = n => String(n).padStart(2, '0'), aMin = h => +h.slice(0, 2) * 60 + +h.slice(3), deMin = m => `${pad(Math.floor(m / 60))}:${pad(m % 60)}`;
+const horaValida = h => typeof h === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(h);
+const fechaValida = f => { if (typeof f !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(f)) return false; const [a, m, d] = f.split('-').map(Number), t = new Date(Date.UTC(a, m - 1, d)); return t.getUTCFullYear() === a && t.getUTCMonth() === m - 1 && t.getUTCDate() === d; };
+const sumarDias = (f, n) => new Date(Date.parse(f + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+const diaSemana = f => new Date(f + 'T00:00:00Z').getUTCDay() || 7;                  // 1 = lunes … 7 = domingo
+const MAX_DIAS_SERIE = 120, MAX_HORARIOS_SERIE = 1000, DURACIONES = [15, 20, 30, 40, 45, 60, 90, 120];
+const docenteDe = u => one('SELECT id FROM docentes WHERE user_id=?', u.id);
+const viva = horarioId => !!one("SELECT 1 FROM asesorias WHERE horario_id=? AND estado IN ('pendiente','confirmada','realizada')", horarioId);
+// Agrega un horario (o reactiva uno retirado). Devuelve 'creado' | 'reactivado' | 'existe' (ya estaba libre) | 'ocupado' (tiene una asesoría viva).
+function ponerHorario(docenteId, fecha, hora, serieId = null) {
+  const h = one('SELECT id,libre FROM horarios WHERE docente_id=? AND fecha=? AND hora=?', docenteId, fecha, hora);
+  if (!h) { run('INSERT INTO horarios(docente_id,fecha,hora,serie_id) VALUES(?,?,?,?)', docenteId, fecha, hora, serieId); return 'creado'; }
+  if (h.libre) return 'existe'; if (viva(h.id)) return 'ocupado';
+  run('UPDATE horarios SET libre=1, serie_id=? WHERE id=?', serieId, h.id); return 'reactivado';
+}
+// Retira un horario SIN asesoría viva: se borra, o si tuvo asesorías (canceladas) se deja fuera de uso para no perder el historial.
+function retirarHorario(id) { if (one('SELECT 1 FROM asesorias WHERE horario_id=?', id)) run('UPDATE horarios SET libre=0, serie_id=NULL WHERE id=?', id); else run('DELETE FROM horarios WHERE id=?', id); }
 app.post('/api/horarios', auth('docente'), (req, res) => {
-  const { fecha, hora } = req.body || {}; const d = one('SELECT id FROM docentes WHERE user_id=?', req.user.id);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha || '') || !/^\d{2}:\d{2}$/.test(hora || '')) return res.status(400).json({ error: 'Fecha u hora inválida.' });
-  try { run('INSERT INTO horarios(docente_id,fecha,hora) VALUES(?,?,?)', d.id, fecha, hora); res.json({ ok: true }); }
-  catch { res.status(409).json({ error: 'Ya registraste ese horario.' }); }
+  const { fecha, hora } = req.body || {}; const d = docenteDe(req.user);
+  if (!fechaValida(fecha) || !horaValida(hora)) return res.status(400).json({ error: 'Fecha u hora inválida.' });
+  if (yaPaso(fecha, hora)) return res.status(400).json({ error: 'Esa fecha y hora ya pasaron.' });
+  const r = ponerHorario(d.id, fecha, hora);
+  if (r === 'existe') return res.status(409).json({ error: 'Ya registraste ese horario.' });
+  if (r === 'ocupado') return res.status(409).json({ error: 'Ese horario ya tiene una asesoría.' });
+  res.json({ ok: true });
+});
+// Mis horarios próximos (libres y reservados; los retirados no salen).
+app.get('/api/mis-horarios', auth('docente'), (req, res) => res.json(q(`SELECT * FROM (SELECT h.id,h.fecha,h.hora,h.libre,h.serie_id,
+    (SELECT a.estado FROM asesorias a WHERE a.horario_id=h.id AND a.estado IN ('pendiente','confirmada','realizada') LIMIT 1) estado
+  FROM horarios h WHERE h.docente_id=? AND ${futuro('h')}) WHERE libre=1 OR estado IS NOT NULL ORDER BY fecha,hora LIMIT 500`, docenteDe(req.user).id, ...paramsFuturo())));
+app.delete('/api/horarios/:id', auth('docente'), (req, res) => {
+  const h = one('SELECT id FROM horarios WHERE id=? AND docente_id=?', req.params.id, docenteDe(req.user).id);
+  if (!h) return res.status(404).json({ error: 'No encontré ese horario.' });
+  if (viva(h.id)) return res.status(409).json({ error: 'Ese horario ya tiene una asesoría: cancélala primero.' });
+  retirarHorario(h.id); res.json({ ok: true });
+});
+// Crea los horarios de una regla semanal: días (1 = lunes … 7 = domingo), de `inicio` a `fin` en bloques de `duracion` minutos, entre `desde` y `hasta`.
+app.post('/api/series', auth('docente'), (req, res) => {
+  const { dias, inicio, fin, duracion, desde, hasta } = req.body || {}, d = docenteDe(req.user), mal = m => res.status(400).json({ error: m });
+  if (!Array.isArray(dias) || !dias.length || dias.length > 7 || new Set(dias).size !== dias.length || !dias.every(x => Number.isInteger(x) && x >= 1 && x <= 7)) return mal('Elige al menos un día de la semana.');
+  if (!horaValida(inicio) || !horaValida(fin) || aMin(inicio) >= aMin(fin)) return mal('Revisa las horas: la de inicio debe ser anterior a la de fin.');
+  if (!DURACIONES.includes(duracion)) return mal('La duración de cada asesoría debe ser de ' + DURACIONES.join(', ') + ' minutos.');
+  if (!fechaValida(desde) || !fechaValida(hasta) || desde > hasta) return mal('Revisa las fechas: la inicial debe ser anterior o igual a la final.');
+  if (hasta < ahoraLocal().fecha) return mal('La fecha final ya pasó.');
+  if ((Date.parse(hasta) - Date.parse(desde)) / 864e5 + 1 > MAX_DIAS_SERIE) return mal(`El periodo no puede pasar de ${MAX_DIAS_SERIE} días; crea otra serie para continuar.`);
+  const horas = []; for (let m = aMin(inicio); m + duracion <= aMin(fin); m += duracion) horas.push(deMin(m));
+  if (!horas.length) return mal('Entre esas horas no cabe ni una asesoría de esa duración.');
+  const fechas = []; for (let f = desde; f <= hasta; f = sumarDias(f, 1)) if (dias.includes(diaSemana(f))) fechas.push(f);
+  if (!fechas.length) return mal('En ese periodo no hay ninguno de los días elegidos.');
+  if (fechas.length * horas.length > MAX_HORARIOS_SERIE) return mal(`Serían ${fechas.length * horas.length} horarios; el máximo por serie es ${MAX_HORARIOS_SERIE}. Acorta el periodo o usa bloques más largos.`);
+  const cuenta = { creados: 0, reactivados: 0, yaExistian: 0, ocupados: 0, pasados: 0 }; let serie;
+  db.exec('BEGIN');
+  try {
+    serie = Number(run('INSERT INTO series(docente_id,dias,inicio,fin,duracion,desde,hasta) VALUES(?,?,?,?,?,?,?)', d.id, [...dias].sort().join(','), inicio, fin, duracion, desde, hasta).lastInsertRowid);
+    for (const f of fechas) for (const h of horas) {
+      if (yaPaso(f, h)) { cuenta.pasados++; continue; }
+      const r = ponerHorario(d.id, f, h, serie); cuenta[{ creado: 'creados', reactivado: 'reactivados', existe: 'yaExistian', ocupado: 'ocupados' }[r]]++;
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  res.json({ ok: true, serie_id: serie, ...cuenta });
+});
+app.get('/api/series', auth('docente'), (req, res) => res.json(q(`SELECT s.id,s.dias,s.inicio,s.fin,s.duracion,s.desde,s.hasta,
+    (SELECT COUNT(*) FROM horarios h WHERE h.serie_id=s.id AND ${futuro('h')} AND h.libre=1) libres,
+    (SELECT COUNT(*) FROM horarios h WHERE h.serie_id=s.id AND ${futuro('h')} AND h.libre=0 AND EXISTS (SELECT 1 FROM asesorias a WHERE a.horario_id=h.id AND a.estado IN ('pendiente','confirmada','realizada'))) reservados
+  FROM series s WHERE s.docente_id=? ORDER BY s.id DESC`, ...paramsFuturo(), ...paramsFuturo(), docenteDe(req.user).id).map(x => ({ ...x, dias: x.dias.split(',').map(Number) }))));
+// Quitar una serie: se retiran sus horarios futuros que siguen libres; los que ya tienen asesoría se conservan como horarios sueltos.
+app.delete('/api/series/:id', auth('docente'), (req, res) => {
+  const d = docenteDe(req.user), s = one('SELECT id FROM series WHERE id=? AND docente_id=?', req.params.id, d.id);
+  if (!s) return res.status(404).json({ error: 'No encontré esa serie.' });
+  let quitados = 0, conservados = 0; db.exec('BEGIN');
+  try {
+    for (const h of q(`SELECT h.id FROM horarios h WHERE h.serie_id=? AND ${futuro('h')}`, s.id, ...paramsFuturo())) { if (viva(h.id)) conservados++; else { retirarHorario(h.id); quitados++; } }
+    run('UPDATE horarios SET serie_id=NULL WHERE serie_id=?', s.id); run('DELETE FROM series WHERE id=?', s.id); db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  res.json({ ok: true, quitados, conservados });
 });
 app.get('/api/notificaciones', auth('secretaria'), (req, res) => res.json(q('SELECT * FROM notificaciones ORDER BY id DESC LIMIT 100')));
 app.get('/api/qr', async (req, res) => res.json({ url: BASE, png: await QRCode.toDataURL(BASE, { margin: 1, width: 320 }) }));

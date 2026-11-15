@@ -31,7 +31,8 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 | `padron` | Matrículas válidas (valida el registro) y, opcionalmente, el correo institucional de cada una (`email`) |
 | `users` | Estudiantes, docentes y secretaría (`rol`), contraseña en hash |
 | `docentes` | Materias, cubículo, foto (1 a 1 con `users`) |
-| `horarios` | Franjas por docente; `libre` = 1 o 0; única por docente/fecha/hora |
+| `horarios` | Franjas por docente; `libre` = 1 o 0; única por docente/fecha/hora; `serie_id` si nacieron de una serie semanal |
+| `series` | Reglas semanales con las que un docente generó horarios (días, horas, duración, periodo) |
 | `asesorias` | Estudiante, docente, horario, materia, duda, estado |
 | `notificaciones` | Copia de cada correo y si se envió (los códigos de verificación no se guardan) |
 | `codigos` | Códigos de un solo uso enviados por correo (solo su huella): solicitud de registro pendiente, con caducidad y contador de intentos |
@@ -41,6 +42,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 - **Contraseñas** con bcrypt; **sesión** en cookie firmada, `httpOnly`, 8 horas; freno a fuerza bruta: solo cuentan los **fallos**, por matrícula + IP (8 en 10 min; el acceso correcto limpia el contador) y un tope amplio de 100 fallos por IP. Así quien se equivoca no bloquea a los demás aunque compartan la red de la facultad.
 - **Consultas parametrizadas** (evita inyección SQL) y escape de HTML en la interfaz (evita XSS).
 - **Tope de reservas:** cada estudiante puede tener como máximo 2 asesorías activas (`MAX_ASESORIAS_ACTIVAS`); la tercera recibe 409 con el mensaje "Ya tienes 2 asesorías activas…". Cancelar o que se realice la asesoría libera el cupo. La revisión y la reserva ocurren en el mismo turno síncrono, así que solicitudes simultáneas no lo rebasan.
+- **Disponibilidad del docente** (pantalla *Mi disponibilidad*): además de agregar horarios sueltos, puede **repetir cada semana** (`POST /api/series`): elige los días, el rango de horas, la duración de cada asesoría (15 a 120 min) y el periodo (hasta 120 días y 1000 horarios por serie). Los bloques que ya pasaron se omiten y los que ya existían no se duplican. Cada horario es un bloque que *empieza* a esa hora. Puede ver sus horarios próximos y **quitarlos** uno por uno o toda una serie (`DELETE /api/horarios/:id`, `DELETE /api/series/:id`): solo se quitan los libres; uno con asesoría pendiente, confirmada o realizada se conserva (hay que cancelarla primero). Si un horario retirado tuvo asesorías canceladas no se borra, para no perder el historial: queda fuera de uso y se reactiva si se vuelve a agregar.
 - **Horarios vencidos:** un horario que ya empezó no se puede reservar (400, sin consumirlo) y los listados no lo ofrecen; se calcula en la hora local de la facultad (`ZONA_HORARIA`), no en UTC.
 - **Reserva atómica:** `UPDATE horarios SET libre=0 WHERE id=? AND libre=1`; si dos estudiantes pulsan a la vez, solo uno gana.
 - **Ciclo de vida de una asesoría:** pendiente → confirmada → realizada; se puede cancelar mientras esté pendiente o confirmada. *Cancelada* y *realizada* son definitivas: no se cancelan de nuevo ni se reabren (responde 409), de modo que un horario liberado por una cancelación no puede volver a liberarse bajo los pies de quien ya lo reservó. El docente se identifica por su cuenta, no por su correo.
@@ -53,7 +55,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 |---|---|
 | 1.3.1 Registro y acceso | `/api/registro`, `/api/registro/confirmar`, `/api/login`, `/api/recuperar`, `/api/recuperar/confirmar`, `padron`, `codigos` |
 | 1.3.2 Catálogo de docentes | `/api/docentes?q=` |
-| 1.3.3 Agendamiento | `/api/asesorias` (POST), `/api/horarios` |
+| 1.3.3 Agendamiento | `/api/asesorias` (POST), `/api/horarios`, `/api/mis-horarios`, `/api/series` |
 | 1.3.4 Confirmaciones | función `notificar()`, tabla `notificaciones` |
 | 1.3.5 Historial | `/api/asesorias` (GET), vista "Historial" |
 | 1.2.4 Seguridad y accesibilidad | roles, cookie segura, diseño responsivo, foco visible |
