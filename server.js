@@ -237,13 +237,19 @@ app.get('/api/asesorias', auth(), (req, res) => {
     JOIN horarios h ON h.id=a.horario_id JOIN users e ON e.id=a.estudiante_id JOIN docentes d ON d.id=a.docente_id
     JOIN users du ON du.id=d.user_id WHERE ${f[0]} ORDER BY h.fecha DESC,h.hora DESC`, f[1]));
 });
+// Ciclo de vida de una asesoría: pendiente → confirmada → realizada, y cancelable mientras esté pendiente o confirmada. Cancelada y realizada son DEFINITIVAS.
+// Una asesoría activa (pendiente/confirmada) es la única dueña de su horario; por eso solo al cancelar una activa se libera. Si se pudiera cancelar dos veces
+// (o reabrir una cancelada) se liberaría un horario que otra persona ya reservó, y dos estudiantes quedarían con el mismo.
+const TRANSICIONES = { confirmada: ['pendiente'], realizada: ['confirmada'], cancelada: ['pendiente', 'confirmada'] };   // estado nuevo -> estados desde los que se permite
 app.patch('/api/asesorias/:id', auth('estudiante', 'docente'), async (req, res) => {
   const d = detalle(req.params.id), est = req.body?.estado;
   const permitido = req.user.rol === 'docente' ? ['confirmada', 'realizada', 'cancelada'] : ['cancelada'];
   if (!d || !permitido.includes(est)) return res.status(400).json({ error: 'Cambio de estado no permitido.' });
-  const mia = req.user.rol === 'estudiante' ? d.estudiante_id === req.user.id : d.doc_email === req.user.email;
+  const mia = req.user.rol === 'estudiante' ? d.estudiante_id === req.user.id : !!one('SELECT 1 FROM docentes WHERE id=? AND user_id=?', d.docente_id, req.user.id);
   if (!mia) return res.status(403).json({ error: 'Esta asesoría no es tuya.' });
-  run('UPDATE asesorias SET estado=? WHERE id=?', est, d.id);
+  // Revisión + cambio + liberación en el mismo turno síncrono (sin await entre medias): dos solicitudes simultáneas no pueden pasar ambas.
+  if (!TRANSICIONES[est].includes(d.estado)) return res.status(409).json({ error: d.estado === est ? `Esa asesoría ya estaba ${est}.` : `Una asesoría ${d.estado} ya no puede quedar ${est}.` });
+  if (!run('UPDATE asesorias SET estado=? WHERE id=? AND estado=?', est, d.id, d.estado).changes) return res.status(409).json({ error: 'La asesoría cambió mientras tanto. Recarga la lista.' });
   if (est === 'cancelada') run('UPDATE horarios SET libre=1 WHERE id=?', d.horario_id); // libera el horario
   await notificar(d.id, [d.est_email, d.doc_email, ...secretarias()], `SAE · Asesoría #${d.id} ${est}`, `La asesoría de ${d.materia} (${d.fecha} ${d.hora}) quedó ${est}.`);
   res.json({ ok: true });
