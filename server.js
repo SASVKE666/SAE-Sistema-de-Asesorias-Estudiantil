@@ -209,6 +209,12 @@ app.get('/api/docentes', auth(), (req, res) => {
     (SELECT COUNT(*) FROM horarios h WHERE h.docente_id=d.id AND h.libre=1 AND ${futuro('h')}) libres
     FROM docentes d JOIN users u ON u.id=d.user_id WHERE u.nombre LIKE ? OR d.materias LIKE ? ORDER BY u.nombre`, ...paramsFuturo(), t, t));
 });
+// Una ficha de docente (la usa el enlace directo del QR de cada docente: #docente/<id>).
+app.get('/api/docentes/:id', auth(), (req, res) => {
+  const d = /^\d{1,9}$/.test(req.params.id) && one(`SELECT d.id, u.nombre, d.materias, d.cubiculo, d.foto,
+    (SELECT COUNT(*) FROM horarios h WHERE h.docente_id=d.id AND h.libre=1 AND ${futuro('h')}) libres FROM docentes d JOIN users u ON u.id=d.user_id WHERE d.id=?`, ...paramsFuturo(), req.params.id);
+  d ? res.json(d) : res.status(404).json({ error: 'Ese docente no está en el sistema.' });
+});
 app.get('/api/docentes/:id/horarios', auth(), (req, res) =>
   res.json(q(`SELECT h.id,h.fecha,h.hora FROM horarios h WHERE h.docente_id=? AND h.libre=1 AND ${futuro('h')} ORDER BY h.fecha,h.hora`, req.params.id, ...paramsFuturo())));
 
@@ -340,12 +346,20 @@ app.delete('/api/series/:id', auth('docente'), (req, res) => {
 });
 app.get('/api/notificaciones', auth('secretaria'), (req, res) => res.json(q('SELECT * FROM notificaciones ORDER BY id DESC LIMIT 100')));
 app.get('/api/qr', async (req, res) => res.json({ url: BASE, png: await QRCode.toDataURL(BASE, { margin: 1, width: 320 }) }));
+// QR por docente: lleva directo a su ficha con los horarios libres (#docente/<id>). Cada docente obtiene el suyo; la secretaría, el de todos (para imprimirlos).
+// El enlace no da ningún acceso: solo apunta a algo que ya es visible para quien tiene sesión, y reservar sigue pidiéndola.
+const urlDocente = id => `${BASE.replace(/\/+$/, '')}/#docente/${id}`;
+app.get('/api/qr/docentes', auth('docente', 'secretaria'), async (req, res) => {
+  const base = 'SELECT d.id, u.nombre, d.cubiculo FROM docentes d JOIN users u ON u.id=d.user_id', ds = req.user.rol === 'secretaria' ? q(base + ' ORDER BY u.nombre') : q(base + ' WHERE d.user_id=?', req.user.id);
+  res.json(await Promise.all(ds.map(async d => ({ ...d, url: urlDocente(d.id), png: await QRCode.toDataURL(urlDocente(d.id), { margin: 2, width: 600 }) }))));
+});
 app.use(express.static(path.join(__dirname, 'public')));
 if (require.main === module) {
   if (process.env.NODE_ENV === 'production' && !secretoFuerte(process.env.SESSION_SECRET)) {
     console.error('Error: en producción SESSION_SECRET debe ser una cadena propia, larga y aleatoria (mínimo 32 caracteres; no sirve el valor de ejemplo).\n  Genera una con: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"');
     process.exit(1);
   } else if (!secretoUsable(process.env.SESSION_SECRET)) console.log('Aviso: SESSION_SECRET no está definido (o es el de ejemplo): se usa un secreto temporal y las sesiones se cierran al reiniciar.');
+  if (process.env.NODE_ENV === 'production' && /^https?:\/\/(localhost|127\.)/.test(BASE)) console.error('Aviso: BASE_URL no está configurada (vale ' + BASE + '). Los códigos QR y los enlaces apuntarían a tu propia computadora; define BASE_URL con la dirección pública (https://...).');
   if (process.env.NODE_ENV === 'production' && !mailer) console.error('Aviso: no hay SMTP configurado (SMTP_HOST). Sin correo nadie podrá registrarse: el código de verificación se envía por correo.');
   // Los datos de demostración (seed.js) traen usuarios con contraseñas conocidas: SOLO se cargan si se piden (npm run demo / SEED_DEMO=1) y nunca en producción.
   const demo = process.argv.includes('--demo') || /^(1|true|si|sí)$/i.test(process.env.SEED_DEMO || '');
