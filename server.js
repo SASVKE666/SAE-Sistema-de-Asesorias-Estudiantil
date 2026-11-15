@@ -111,17 +111,20 @@ const app = express();
 if (process.env.TRUST_PROXY) app.set('trust proxy', /^\d+$/.test(process.env.TRUST_PROXY) ? +process.env.TRUST_PROXY : process.env.TRUST_PROXY);
 app.use(express.json({ limit: '20kb' }));
 app.use((req, res, next) => { res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin' });
-  const m = /sae=([^;]+)/.exec(req.headers.cookie || ''); const s = m && verify(m[1]); req.user = s ? one('SELECT id,matricula,nombre,email,rol FROM users WHERE id=?', s.uid) : null; next(); });
+  const m = /sae=([^;]+)/.exec(req.headers.cookie || ''); const s = m && verify(m[1]); const u = s ? one('SELECT id,matricula,nombre,email,rol,pass_hash FROM users WHERE id=?', s.uid) : null;
+  if (u) { const { pass_hash, ...publico } = u; req.user = s.v === versionPass(pass_hash) ? publico : null; } else req.user = null; next(); });
 const auth = (...roles) => (req, res, next) => !req.user ? res.status(401).json({ error: 'Inicia sesión.' }) :
   roles.length && !roles.includes(req.user.rol) ? res.status(403).json({ error: 'No tienes permiso para esta acción.' }) : next();
-const abrir = (res, u) => res.cookie('sae', sign({ uid: u.id, exp: Date.now() + 8 * 3600e3 }), { httpOnly: true, sameSite: 'lax', secure: BASE.startsWith('https'), maxAge: 8 * 3600e3 });
+// La sesión lleva una "versión" derivada de la contraseña vigente: al cambiar la contraseña (recuperación) todas las sesiones abiertas dejan de valer.
+const versionPass = h => crypto.createHash('sha256').update(h).digest('base64url').slice(0, 16);
+const abrir = (res, u) => res.cookie('sae', sign({ uid: u.id, exp: Date.now() + 8 * 3600e3, v: versionPass(one('SELECT pass_hash FROM users WHERE id=?', u.id).pass_hash) }), { httpOnly: true, sameSite: 'lax', secure: BASE.startsWith('https'), maxAge: 8 * 3600e3 });
 // Freno a fuerza bruta: solo cuentan los intentos FALLIDOS (login o registro con respuesta de error), por matrícula + IP.
 // Así una persona que se equivoca no bloquea a las demás aunque compartan IP (red de la facultad, NAT) y los accesos correctos no gastan el cupo.
 const VENTANA = 600e3, MAX_POR_CUENTA = 8, MAX_POR_IP = 100; // 8 fallos / 10 min por matrícula+IP; tope amplio por IP contra probar muchas matrículas
 const fallos = new Map(); // clave -> marcas de tiempo de los fallos recientes
 const recientes = k => { const n = (fallos.get(k) || []).filter(t => Date.now() - t < VENTANA); n.length ? fallos.set(k, n) : fallos.delete(k); return n; };
-const limite = (req, res, next) => {
-  const ip = req.ip || '', cuenta = `${ip}|${String(req.body?.matricula ?? '').trim().toUpperCase().slice(0, 40)}`;
+const limiteCon = ambito => (req, res, next) => {   // `ambito` separa los cupos: la recuperación de contraseña lleva los suyos
+  const ip = ambito + (req.ip || ''), cuenta = `${ip}|${String(req.body?.matricula ?? '').trim().toUpperCase().slice(0, 40)}`;
   if (recientes(cuenta).length >= MAX_POR_CUENTA || recientes(ip).length >= MAX_POR_IP)
     return res.status(429).json({ error: 'Demasiados intentos. Espera 10 minutos.' });
   res.on('finish', () => {
@@ -133,6 +136,10 @@ const limite = (req, res, next) => {
 };
 // El registro NO crea la cuenta: guarda la solicitud y envía un código al correo institucional; la cuenta se crea al confirmarlo (/api/registro/confirmar).
 // Así quien conozca la matrícula de otra persona no puede apropiarse de ella sin acceso a ese buzón. Si el padrón trae el correo de la matrícula, el código va a ESE correo.
+const limite = limiteCon('');                 // login y registro
+// Recuperación de contraseña, con cupos APARTE: quien olvidó su contraseña y falló varias veces al entrar no debe quedar bloqueado para recuperarla, y una
+// respuesta 200 de aquí no debe borrar los fallos de login de esa cuenta (si no, pedir un código entre intentos esquivaría el límite).
+const limiteRec = limiteCon('rec:');
 app.post('/api/registro', limite, async (req, res) => {
   const { matricula, email, password } = req.body || {};
   if (!matricula || typeof password !== 'string' || password.length < 8) return res.status(400).json({ error: 'Completa matrícula, correo y una contraseña de 8+ caracteres.' });
@@ -159,6 +166,30 @@ app.post('/api/registro/confirmar', limite, (req, res) => {
   catch { return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta.' }); }
   run('DELETE FROM codigos WHERE tipo=? AND matricula=?', 'registro', matricula);
   abrir(res, { id: Number(r.lastInsertRowid) }); res.json({ ok: true });
+});
+// ---- Recuperar la contraseña: código al correo de la cuenta → nueva contraseña. Sirve a estudiantes, docentes y secretaría. ----
+const MIN_PASS = { estudiante: 8, docente: 10, secretaria: 10 }, PASS_DEMO = ['Secretaria2026', 'Docente2026'];   // igual que al crear las cuentas; las de demostración nunca
+const passwordInvalida = (rol, pw) => pw.length < (MIN_PASS[rol] || 10) ? `La contraseña debe tener al menos ${MIN_PASS[rol] || 10} caracteres.`
+  : rol !== 'estudiante' && PASS_DEMO.includes(pw) ? 'Esa contraseña es la de demostración; elige otra.' : null;
+app.post('/api/recuperar', limiteRec, (req, res) => {
+  const falta = sinCorreo(); if (falta) return res.status(503).json({ error: falta });
+  const matricula = String(req.body?.matricula ?? '').trim(), u = matricula ? one('SELECT matricula,email FROM users WHERE matricula=?', matricula) : null;
+  const e = u ? emitirCodigo('recuperar', u.matricula, u.email) : null;
+  // Misma respuesta (y sin esperar al correo) exista o no la cuenta, y también si es muy pronto para otro código: no se revela quién tiene cuenta.
+  res.json({ ok: true, mensaje: 'Si esa matrícula tiene una cuenta, enviamos un código a su correo. Revisa también la carpeta de spam.' });
+  if (e?.codigo) enviarCodigo(u.email, 'SAE · Código para restablecer tu contraseña', `Tu código para restablecer la contraseña es: ${e.codigo}\n\nCaduca en 15 minutos. Si no lo solicitaste, ignora este correo: tu contraseña no cambia.`)
+    .then(ok => { if (!ok) run('DELETE FROM codigos WHERE tipo=? AND matricula=?', 'recuperar', u.matricula); }).catch(() => {});
+});
+app.post('/api/recuperar/confirmar', limiteRec, async (req, res) => {
+  const matricula = String(req.body?.matricula ?? '').trim(), password = req.body?.password;
+  const c = comprobarCodigo('recuperar', matricula, req.body?.codigo); if (c.error) return res.status(c.status).json({ error: c.error });
+  const u = one('SELECT id,rol,email FROM users WHERE matricula=?', matricula); if (!u) return res.status(400).json({ error: 'El código venció o no hay una solicitud pendiente. Pide uno nuevo.' });
+  // La contraseña se revisa DESPUÉS del código, y si no cumple el código no se gasta: se puede corregir y reintentar.
+  const err = typeof password !== 'string' ? 'Escribe la nueva contraseña.' : passwordInvalida(u.rol, password); if (err) return res.status(400).json({ error: err });
+  run('UPDATE users SET pass_hash=? WHERE id=?', bcrypt.hashSync(password, 10), u.id);
+  run('DELETE FROM codigos WHERE tipo=? AND matricula=?', 'recuperar', matricula);
+  res.json({ ok: true });
+  notificar(null, [u.email], 'SAE · Tu contraseña cambió', 'La contraseña de tu cuenta del Sistema de Asesorías Estudiantil se restableció y se cerraron las sesiones abiertas. Si no fuiste tú, contacta a la secretaría de inmediato.').catch(() => {});
 });
 app.post('/api/login', limite, (req, res) => {
   const { matricula, password } = req.body || {}; const u = one('SELECT * FROM users WHERE matricula=?', String(matricula || '').trim());
