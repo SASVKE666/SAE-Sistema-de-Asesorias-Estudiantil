@@ -51,6 +51,8 @@ main>h2{margin-bottom:.9rem}
 main>p.mut{margin-top:-.4rem}
 pre{font:.88rem/1.5 ui-monospace,Menlo,Consolas,monospace;background:var(--bg);border-radius:8px;padding:.7rem .8rem;margin:.5rem 0 0 !important}
 a{color:var(--navy)}@media(prefers-color-scheme:dark){a{color:var(--gold2)}}
+.qrs{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:1rem}.qrcard{text-align:center}.qrcard img{width:100%;max-width:260px;height:auto;background:#fff;border-radius:8px}
+@media print{header,#toast,.noprint{display:none!important}body{background:#fff;color:#000}.qrs{display:block}.qrcard{break-inside:avoid;page-break-after:always;box-shadow:none;border:2px solid #000;color:#000;background:#fff;padding:2rem;margin:0 auto;max-width:15cm}.qrcard img{max-width:11cm}.qrcard h3{font-size:1.6rem}.qrcard .mut{color:#333}}
 #det{margin-top:.4rem}
 #det .card{border-top:4px solid var(--gold)}
 #det h3{margin-bottom:.6rem}
@@ -78,13 +80,13 @@ const rutas={
   bitacora:{roles:['secretaria'],t:'Notificaciones'},
   qr:{roles:['estudiante','docente','secretaria'],t:'Código QR'}};
 async function init(){U=(await api('/me')).user;nav()}
-function nav(){const r=location.hash.slice(1)||'catalogo';$('#who').innerHTML=U?`${esc(U.nombre)} (${U.rol}) <button class="ghost" style="color:#fff;border-color:#4a5d82" onclick="salir()">Salir</button>`:'';
+function nav(){const r=location.hash.slice(1)||'catalogo',dm=/^docente\/(\d{1,9})$/.exec(r);$('#who').innerHTML=U?`${esc(U.nombre)} (${U.rol}) <button class="ghost" style="color:#fff;border-color:#4a5d82" onclick="salir()">Salir</button>`:'';
   $('#nav').innerHTML=U?Object.entries(rutas).filter(([k,v])=>v.roles.includes(U.rol)).map(([k,v])=>`<a href="#${k}" class="${k===r?'on':''}">${v.t}</a>`).join(''):'';
-  if(!U)return login();({catalogo,mis,agenda,bitacora,qr}[r]||catalogo)()}
+  if(!U)return login();if(dm)return docente(+dm[1]);({catalogo,mis,agenda,bitacora,qr}[r]||catalogo)()}
 addEventListener('hashchange',nav);
 async function salir(){await api('/logout','POST');U=null;nav()}
 function login(reg){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Unidad Académica de Economía · UAN</span><h1>Encuentra a tu docente y agenda tu asesoría.</h1>
-<p>Consulta la disponibilidad real de los docentes de la Unidad Académica de Economía, reserva un horario y recibe confirmación. Gratis y desde tu celular.</p></div>
+<p>Consulta la disponibilidad real de los docentes de la Unidad Académica de Economía, reserva un horario y recibe confirmación. Gratis y desde tu celular.</p>${/^#docente\/\d+$/.test(location.hash)?'<p class="tag confirmada" style="white-space:normal">Escaneaste el código de un docente: inicia sesión o crea tu cuenta y te llevamos directo a sus horarios.</p>':''}</div>
 <form class="card" id="f"><h2>${reg?'Crear cuenta':'Iniciar sesión'}</h2>
 <label for="m">Matrícula o clave de docente</label><input id="m" required autocomplete="username">
 ${reg?'<label for="e">Correo institucional</label><input id="e" type="email" required autocomplete="email">':''}
@@ -127,6 +129,11 @@ async function catalogo(){ $('#app').innerHTML=`<h2>Docentes</h2><label for="b">
     $('#l').innerHTML=d.map(x=>`<div class="card"><div class="row"><div class="av">${esc(ini(x.nombre))}</div><div><b>${esc(x.nombre)}</b><div class="mut">${esc(x.cubiculo||'')}</div></div></div>
     <p>${esc(x.materias)}</p><span class="tag">${x.libres} horarios libres</span> ${U.rol==='estudiante'?`<button class="gold" style="float:right" onclick="agendar(${x.id},'${esc(x.nombre)}','${esc(x.materias.split(',')[0])}')">Agendar</button>`:''}</div>`).join('')||'<p class="mut">Sin resultados. Prueba con otra materia.</p>'};
   $('#b').oninput=pintar;pintar()}
+// Enlace directo (#docente/<id>), el que abre el QR de cada docente: su ficha y, si eres estudiante, sus horarios libres para agendar.
+async function docente(id){let d;try{d=await api('/docentes/'+id)}catch(x){$('#app').innerHTML=`<h2>Docente no encontrado</h2><div class="card"><p>Este docente ya no está en el sistema; puede que el código QR sea antiguo.</p><a href="#catalogo">Ver todos los docentes</a></div>`;return}
+  $('#app').innerHTML=`<h2>Asesoría con ${esc(d.nombre)}</h2><div class="card"><div class="row"><div class="av">${esc(ini(d.nombre))}</div><div><b>${esc(d.nombre)}</b><div class="mut">${esc(d.cubiculo||'')}</div></div></div>
+  <p>${esc(d.materias)}</p><span class="tag">${d.libres} horarios libres</span></div><div id="det"></div><p><a href="#catalogo">Ver todos los docentes</a></p>`;
+  if(U.rol==='estudiante')agendar(d.id,d.nombre,d.materias.split(',')[0].trim());else $('#det').innerHTML='<p class="mut">Solo los estudiantes pueden agendar asesorías.</p>'}
 async function agendar(id,nombre,materia){sel=null;const hs=await api(`/docentes/${id}/horarios`);
   $('#det').innerHTML=`<div class="card"><h3>Asesoría con ${esc(nombre)}</h3>${hs.length?`<label>Elige un horario</label><div class="slots">${hs.map(h=>`<button data-id="${h.id}" onclick="sel=${h.id};document.querySelectorAll('.slots button').forEach(b=>b.classList.toggle('sel',b.dataset.id==sel))">${fecha(h.fecha)} · ${h.hora}</button>`).join('')}</div>
   <label for="ma">Materia</label><input id="ma" value="${esc(materia)}"><label for="du">¿Cuál es tu duda?</label><textarea id="du" rows="3" placeholder="Describe el tema para que el docente se prepare"></textarea>
@@ -163,6 +170,13 @@ async function quitarSerie(id,res){if(!confirm('Se quitarán los horarios de est
   try{const r=await api('/series/'+id,'DELETE');toast(`Se quitaron ${r.quitados} horarios`+(r.conservados?` y se conservaron ${r.conservados} con asesoría`:'')+'.');agenda()}catch(x){toast(x.message,1)}}
 async function bitacora(){const n=await api('/notificaciones');$('#app').innerHTML=`<h2>Notificaciones registradas</h2><p class="mut">Copia de cada confirmación. “Pendiente” significa que el servidor de correo (SMTP) no está configurado.</p>`+
   n.map(x=>`<div class="card"><b>${esc(x.asunto)}</b> <span class="tag">${x.enviado?'enviado':'pendiente'}</span><div class="mut">${esc(x.destinatario)} · ${esc(x.fecha)}</div><pre style="white-space:pre-wrap;margin:.4rem 0 0">${esc(x.cuerpo)}</pre></div>`).join('')}
-async function qr(){const r=await api('/qr');$('#app').innerHTML=`<h2>Acceso por código QR</h2><div class="card row"><img src="${r.png}" width="200" height="200" alt="Código QR hacia ${esc(r.url)}"><div><p>Imprímelo en carteles de la facultad. Lleva directo al sistema.</p><p class="mut">${esc(r.url)}</p></div></div>`}
+async function qr(){const r=await api('/qr'),ds=U.rol==='estudiante'?[]:await api('/qr/docentes'),local=/^https?:\/\/(localhost|127\.)/.test(r.url);
+  const nombreArchivo=n=>'qr-'+n.normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-zA-Z0-9]+/g,'-').toLowerCase().replace(/^-|-$/g,'');
+  $('#app').innerHTML=`<h2>Acceso por código QR</h2>${local?`<p class="tag cancelada" style="white-space:normal">Estos códigos apuntan a ${esc(r.url)}, que solo funciona en esta computadora. Quien instala el sistema debe definir BASE_URL con la dirección pública antes de imprimirlos.</p>`:''}
+<div class="card row noprint"><img src="${r.png}" width="200" height="200" alt="Código QR hacia ${esc(r.url)}"><div><p>Para carteles de la facultad. Lleva a la entrada del sistema.</p><p class="mut">${esc(r.url)}</p></div></div>
+${ds.length?`<div class="row noprint" style="justify-content:space-between;flex-wrap:wrap"><h3>${U.rol==='docente'?'Tu código QR':'Un código QR por docente'}</h3><button onclick="print()">Imprimir</button></div>
+<p class="mut noprint">${U.rol==='docente'?'Pégalo en la puerta de tu cubículo o en tu material: quien lo escanee llega directo a tus horarios libres y puede agendar desde su celular.':'Cada docente puede imprimir el suyo desde su sesión. Aquí están todos, listos para imprimir en una hoja por docente.'}</p>
+<div class="qrs">${ds.map(d=>`<div class="card qrcard"><h3>${esc(d.nombre)}</h3><div class="mut">${esc(d.cubiculo||'')}</div><img src="${d.png}" alt="Código QR de ${esc(d.nombre)}"><p><b>Escanea para agendar tu asesoría</b></p><div class="mut" style="word-break:break-all">${esc(d.url)}</div>
+<a class="btn noprint" download="${nombreArchivo(d.nombre)}.png" href="${d.png}">Descargar imagen</a></div>`).join('')}</div>`:''}`}
 init();
 </script></body></html>

@@ -43,6 +43,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 - **Consultas parametrizadas** (evita inyección SQL) y escape de HTML en la interfaz (evita XSS).
 - **Tope de reservas:** cada estudiante puede tener como máximo 2 asesorías activas (`MAX_ASESORIAS_ACTIVAS`); la tercera recibe 409 con el mensaje "Ya tienes 2 asesorías activas…". Cancelar o que se realice la asesoría libera el cupo. La revisión y la reserva ocurren en el mismo turno síncrono, así que solicitudes simultáneas no lo rebasan.
 - **Disponibilidad del docente** (pantalla *Mi disponibilidad*): además de agregar horarios sueltos, puede **repetir cada semana** (`POST /api/series`): elige los días, el rango de horas, la duración de cada asesoría (15 a 120 min) y el periodo (hasta 120 días y 1000 horarios por serie). Los bloques que ya pasaron se omiten y los que ya existían no se duplican. Cada horario es un bloque que *empieza* a esa hora. Puede ver sus horarios próximos y **quitarlos** uno por uno o toda una serie (`DELETE /api/horarios/:id`, `DELETE /api/series/:id`): solo se quitan los libres; uno con asesoría pendiente, confirmada o realizada se conserva (hay que cancelarla primero). Si un horario retirado tuvo asesorías canceladas no se borra, para no perder el historial: queda fuera de uso y se reactiva si se vuelve a agregar.
+- **QR por docente:** cada docente tiene un QR que apunta a su ficha con los horarios libres (`<BASE_URL>/#docente/<id>`). En la sección *Código QR* el docente ve y descarga el suyo; la secretaría ve el de todos y puede **imprimirlos** (una hoja por docente, con su nombre y cubículo). Pensado para pegarlo en la puerta del cubículo o en el material de clase: quien lo escanea llega directo a los horarios de ese docente. Si no tiene sesión, el enlace se conserva al iniciar sesión o al registrarse (incluida la verificación del correo) y lo lleva directo al docente; si el docente ya no existe, muestra un aviso claro. El enlace no da acceso extra: solo muestra lo que ya ve cualquiera con sesión, y reservar sigue siendo solo para estudiantes (`GET /api/docentes/:id`, `GET /api/qr/docentes`).
 - **Horarios vencidos:** un horario que ya empezó no se puede reservar (400, sin consumirlo) y los listados no lo ofrecen; se calcula en la hora local de la facultad (`ZONA_HORARIA`), no en UTC.
 - **Reserva atómica:** `UPDATE horarios SET libre=0 WHERE id=? AND libre=1`; si dos estudiantes pulsan a la vez, solo uno gana.
 - **Ciclo de vida de una asesoría:** pendiente → confirmada → realizada; se puede cancelar mientras esté pendiente o confirmada. *Cancelada* y *realizada* son definitivas: no se cancelan de nuevo ni se reabren (responde 409), de modo que un horario liberado por una cancelación no puede volver a liberarse bajo los pies de quien ya lo reservó. El docente se identifica por su cuenta, no por su correo.
@@ -55,7 +56,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 |---|---|
 | 1.3.1 Registro y acceso | `/api/registro`, `/api/registro/confirmar`, `/api/login`, `/api/recuperar`, `/api/recuperar/confirmar`, `padron`, `codigos` |
 | 1.3.2 Catálogo de docentes | `/api/docentes?q=` |
-| 1.3.3 Agendamiento | `/api/asesorias` (POST), `/api/horarios`, `/api/mis-horarios`, `/api/series` |
+| 1.3.3 Agendamiento | `/api/asesorias` (POST), `/api/horarios`, `/api/mis-horarios`, `/api/series`, `/api/docentes/:id`, `/api/qr/docentes` |
 | 1.3.4 Confirmaciones | función `notificar()`, tabla `notificaciones` |
 | 1.3.5 Historial | `/api/asesorias` (GET), vista "Historial" |
 | 1.2.4 Seguridad y accesibilidad | roles, cookie segura, diseño responsivo, foco visible |
@@ -84,7 +85,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 | Variable | Para qué | Por defecto |
 |---|---|---|
 | `PORT` | Puerto | 3000 |
-| `BASE_URL` | URL pública (la usa el QR y activa cookie `secure` si empieza con `https`) | http://localhost:PORT |
+| `BASE_URL` | URL pública (la usan los códigos QR y activa cookie `secure` si empieza con `https`). **Defínela antes de imprimir QR**: con el valor por defecto apuntarían a tu propia computadora (en producción el servidor lo avisa al arrancar) | http://localhost:PORT |
 | `SESSION_SECRET` | Firma de sesiones. **Obligatorio en producción**: con `NODE_ENV=production` el servidor no arranca si falta, es un valor de ejemplo o tiene menos de 32 caracteres. Fuera de producción, sin él se usa un secreto aleatorio temporal (las sesiones se cierran al reiniciar). Genera uno con `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` | sin valor: temporal (no hay secreto conocido) |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | Correo real. **Obligatorio en producción**: el código de verificación del registro viaja por correo; sin SMTP el registro responde 503 | sin SMTP: solo bitácora (en desarrollo el código se imprime en la consola) |
 | `DOMINIOS_CORREO` | Dominios aceptados para el correo del estudiante cuando el padrón no lo trae (separados por coma; incluye subdominios; `*` acepta cualquiera, no recomendado) | `uan.edu.mx` |
@@ -108,7 +109,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
    ```
    Si alguna fila tiene un error no se carga nada y se listan todos con su línea. **Conviene que todas las filas traigan el correo**: así el código de verificación del registro solo llega al dueño de la matrícula. Si probaste con `npm run demo` en esa misma base, bórrala (`data/sae.db`) antes de publicar.
 4. La aplicación **no lee el archivo `.env` por sí sola**: define las variables en el entorno del servicio (pm2 `ecosystem.config.js`, systemd `Environment=`, etc.) o arranca con `node --env-file=.env server.js`. Mantén el proceso activo con `pm2 start server.js --name sae`. Respalda `data/sae.db` periódicamente.
-5. Genera el QR desde la sección "Código QR" e imprímelo para carteles.
+5. Con `BASE_URL` ya definida, entra a la sección "Código QR": ahí está el QR general para carteles y, para docentes y secretaría, el **QR de cada docente** (ver "QR por docente").
 
 ## 5. Publicar este proyecto en GitHub
 ```bash
