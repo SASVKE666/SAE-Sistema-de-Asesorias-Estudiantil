@@ -32,6 +32,8 @@ if (!db.prepare('PRAGMA table_info(padron)').all().some(c => c.name === 'email')
 db.exec(`CREATE TABLE IF NOT EXISTS series(id INTEGER PRIMARY KEY, docente_id INTEGER NOT NULL REFERENCES docentes(id), dias TEXT NOT NULL, inicio TEXT NOT NULL, fin TEXT NOT NULL,
   duracion INTEGER NOT NULL, desde TEXT NOT NULL, hasta TEXT NOT NULL, creada TEXT DEFAULT CURRENT_TIMESTAMP);`);
 if (!db.prepare('PRAGMA table_info(horarios)').all().some(c => c.name === 'serie_id')) db.exec('ALTER TABLE horarios ADD COLUMN serie_id INTEGER');
+// asesorias.recordatorio = 1 cuando ya se envió el recordatorio (o no hace falta enviarlo): así no se repite aunque el servidor se reinicie.
+if (!db.prepare('PRAGMA table_info(asesorias)').all().some(c => c.name === 'recordatorio')) db.exec('ALTER TABLE asesorias ADD COLUMN recordatorio INTEGER NOT NULL DEFAULT 0');
 // Las fechas y horas de los horarios son hora local de la Unidad Académica (no UTC): "ahora" se calcula en esa zona (ZONA_HORARIA, por defecto Nayarit/Pacífico).
 const ZONA_DEFECTO = 'America/Mazatlan';
 function ahoraLocal() {
@@ -49,13 +51,15 @@ const q = (s, ...p) => db.prepare(s).all(...p), one = (s, ...p) => db.prepare(s)
 // ---- Correo: SMTP real si hay variables; si no, queda registrado en la bitácora (enviado=0) ----
 const mailer = process.env.SMTP_HOST ? nodemailer.createTransport({ host: process.env.SMTP_HOST, port: +process.env.SMTP_PORT || 587,
   auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } }) : null;
-async function notificar(asesoriaId, destinatarios, asunto, cuerpo) {
+async function notificar(asesoriaId, destinatarios, asunto, cuerpo) {   // devuelve cuántos envíos FALLARON (sin SMTP no es un fallo: solo queda en la bitácora)
+  let fallos = 0;
   for (const to of destinatarios) {
     let ok = 0;
     try { if (mailer) { await mailer.sendMail({ from: process.env.SMTP_FROM || 'SAE <no-reply@uan.edu.mx>', to, subject: asunto, text: cuerpo }); ok = 1; } }
-    catch (e) { console.error('Correo falló:', e.message); }
+    catch (e) { fallos++; console.error('Correo falló:', e.message); }
     run('INSERT INTO notificaciones(asesoria_id,destinatario,asunto,cuerpo,enviado) VALUES(?,?,?,?,?)', asesoriaId, to, asunto, cuerpo, ok);
   }
+  return fallos;
 }
 const detalle = id => one(`SELECT a.*, h.fecha, h.hora, e.nombre est_nombre, e.email est_email, u.nombre doc_nombre, u.email doc_email
   FROM asesorias a JOIN horarios h ON h.id=a.horario_id JOIN users e ON e.id=a.estudiante_id
@@ -245,23 +249,28 @@ app.get('/api/asesorias', auth(), (req, res) => {
   const u = req.user, f = u.rol === 'estudiante' ? ['a.estudiante_id=?', u.id] : u.rol === 'docente' ? ['a.docente_id=(SELECT id FROM docentes WHERE user_id=?)', u.id] : ['1=?', 1];
   res.json(q(`SELECT a.id,a.materia,a.duda,a.estado,h.fecha,h.hora,e.nombre estudiante,du.nombre docente FROM asesorias a
     JOIN horarios h ON h.id=a.horario_id JOIN users e ON e.id=a.estudiante_id JOIN docentes d ON d.id=a.docente_id
-    JOIN users du ON du.id=d.user_id WHERE ${f[0]} ORDER BY h.fecha DESC,h.hora DESC`, f[1]));
+    JOIN users du ON du.id=d.user_id WHERE ${f[0]} ORDER BY h.fecha DESC,h.hora DESC`, f[1]).map(a => ({ ...a, empezo: yaPaso(a.fecha, a.hora) })));   // empezo: ya llegó la hora (el docente ya puede cerrarla)
 });
-// Ciclo de vida de una asesoría: pendiente → confirmada → realizada, y cancelable mientras esté pendiente o confirmada. Cancelada y realizada son DEFINITIVAS.
+// Ciclo de vida de una asesoría: pendiente → confirmada → realizada (o inasistencia, si el estudiante no llegó; solo después de que empieza), y cancelable mientras esté
+// pendiente o confirmada. Cancelada, realizada e inasistencia son DEFINITIVAS.
 // Una asesoría activa (pendiente/confirmada) es la única dueña de su horario; por eso solo al cancelar una activa se libera. Si se pudiera cancelar dos veces
 // (o reabrir una cancelada) se liberaría un horario que otra persona ya reservó, y dos estudiantes quedarían con el mismo.
-const TRANSICIONES = { confirmada: ['pendiente'], realizada: ['confirmada'], cancelada: ['pendiente', 'confirmada'] };   // estado nuevo -> estados desde los que se permite
+const TRANSICIONES = { confirmada: ['pendiente'], realizada: ['confirmada'], inasistencia: ['confirmada'], cancelada: ['pendiente', 'confirmada'] };   // estado nuevo -> estados desde los que se permite
 app.patch('/api/asesorias/:id', auth('estudiante', 'docente'), async (req, res) => {
   const d = detalle(req.params.id), est = req.body?.estado;
-  const permitido = req.user.rol === 'docente' ? ['confirmada', 'realizada', 'cancelada'] : ['cancelada'];
+  const permitido = req.user.rol === 'docente' ? ['confirmada', 'realizada', 'inasistencia', 'cancelada'] : ['cancelada'];
   if (!d || !permitido.includes(est)) return res.status(400).json({ error: 'Cambio de estado no permitido.' });
   const mia = req.user.rol === 'estudiante' ? d.estudiante_id === req.user.id : !!one('SELECT 1 FROM docentes WHERE id=? AND user_id=?', d.docente_id, req.user.id);
   if (!mia) return res.status(403).json({ error: 'Esta asesoría no es tuya.' });
   // Revisión + cambio + liberación en el mismo turno síncrono (sin await entre medias): dos solicitudes simultáneas no pueden pasar ambas.
   if (!TRANSICIONES[est].includes(d.estado)) return res.status(409).json({ error: d.estado === est ? `Esa asesoría ya estaba ${est}.` : `Una asesoría ${d.estado} ya no puede quedar ${est}.` });
+  if (est === 'inasistencia' && !yaPaso(d.fecha, d.hora)) return res.status(409).json({ error: 'Todavía no llega la hora de esa asesoría: la inasistencia solo se registra después de que empieza.' });
   if (!run('UPDATE asesorias SET estado=? WHERE id=? AND estado=?', est, d.id, d.estado).changes) return res.status(409).json({ error: 'La asesoría cambió mientras tanto. Recarga la lista.' });
   if (est === 'cancelada') run('UPDATE horarios SET libre=1 WHERE id=?', d.horario_id); // libera el horario
-  await notificar(d.id, [d.est_email, d.doc_email, ...secretarias()], `SAE · Asesoría #${d.id} ${est}`, `La asesoría de ${d.materia} (${d.fecha} ${d.hora}) quedó ${est}.`);
+  const horas = horasRecordatorio();   // si se confirma cuando ya falta menos que el aviso, el correo de confirmación hace de recordatorio: no se manda otro
+  if (est === 'confirmada' && horas && minutosHasta(d.fecha, d.hora) <= horas * 60) run('UPDATE asesorias SET recordatorio=1 WHERE id=?', d.id);
+  const etiqueta = est === 'inasistencia' ? 'con inasistencia' : est;
+  await notificar(d.id, [d.est_email, d.doc_email, ...secretarias()], `SAE · Asesoría #${d.id} ${etiqueta}`, `La asesoría de ${d.materia} (${d.fecha} ${d.hora}) quedó ${etiqueta}${est === 'inasistencia' ? ': el estudiante no asistió' : ''}.`);
   res.json({ ok: true });
 });
 // ---- Disponibilidad del docente: horarios sueltos y series semanales ----
@@ -274,7 +283,7 @@ const sumarDias = (f, n) => new Date(Date.parse(f + 'T00:00:00Z') + n * 864e5).t
 const diaSemana = f => new Date(f + 'T00:00:00Z').getUTCDay() || 7;                  // 1 = lunes … 7 = domingo
 const MAX_DIAS_SERIE = 120, MAX_HORARIOS_SERIE = 1000, DURACIONES = [15, 20, 30, 40, 45, 60, 90, 120];
 const docenteDe = u => one('SELECT id FROM docentes WHERE user_id=?', u.id);
-const viva = horarioId => !!one("SELECT 1 FROM asesorias WHERE horario_id=? AND estado IN ('pendiente','confirmada','realizada')", horarioId);
+const viva = horarioId => !!one("SELECT 1 FROM asesorias WHERE horario_id=? AND estado IN ('pendiente','confirmada','realizada','inasistencia')", horarioId);
 // Agrega un horario (o reactiva uno retirado). Devuelve 'creado' | 'reactivado' | 'existe' (ya estaba libre) | 'ocupado' (tiene una asesoría viva).
 function ponerHorario(docenteId, fecha, hora, serieId = null) {
   const h = one('SELECT id,libre FROM horarios WHERE docente_id=? AND fecha=? AND hora=?', docenteId, fecha, hora);
@@ -295,7 +304,7 @@ app.post('/api/horarios', auth('docente'), (req, res) => {
 });
 // Mis horarios próximos (libres y reservados; los retirados no salen).
 app.get('/api/mis-horarios', auth('docente'), (req, res) => res.json(q(`SELECT * FROM (SELECT h.id,h.fecha,h.hora,h.libre,h.serie_id,
-    (SELECT a.estado FROM asesorias a WHERE a.horario_id=h.id AND a.estado IN ('pendiente','confirmada','realizada') LIMIT 1) estado
+    (SELECT a.estado FROM asesorias a WHERE a.horario_id=h.id AND a.estado IN ('pendiente','confirmada','realizada','inasistencia') LIMIT 1) estado
   FROM horarios h WHERE h.docente_id=? AND ${futuro('h')}) WHERE libre=1 OR estado IS NOT NULL ORDER BY fecha,hora LIMIT 500`, docenteDe(req.user).id, ...paramsFuturo())));
 app.delete('/api/horarios/:id', auth('docente'), (req, res) => {
   const h = one('SELECT id FROM horarios WHERE id=? AND docente_id=?', req.params.id, docenteDe(req.user).id);
@@ -331,7 +340,7 @@ app.post('/api/series', auth('docente'), (req, res) => {
 });
 app.get('/api/series', auth('docente'), (req, res) => res.json(q(`SELECT s.id,s.dias,s.inicio,s.fin,s.duracion,s.desde,s.hasta,
     (SELECT COUNT(*) FROM horarios h WHERE h.serie_id=s.id AND ${futuro('h')} AND h.libre=1) libres,
-    (SELECT COUNT(*) FROM horarios h WHERE h.serie_id=s.id AND ${futuro('h')} AND h.libre=0 AND EXISTS (SELECT 1 FROM asesorias a WHERE a.horario_id=h.id AND a.estado IN ('pendiente','confirmada','realizada'))) reservados
+    (SELECT COUNT(*) FROM horarios h WHERE h.serie_id=s.id AND ${futuro('h')} AND h.libre=0 AND EXISTS (SELECT 1 FROM asesorias a WHERE a.horario_id=h.id AND a.estado IN ('pendiente','confirmada','realizada','inasistencia'))) reservados
   FROM series s WHERE s.docente_id=? ORDER BY s.id DESC`, ...paramsFuturo(), ...paramsFuturo(), docenteDe(req.user).id).map(x => ({ ...x, dias: x.dias.split(',').map(Number) }))));
 // Quitar una serie: se retiran sus horarios futuros que siguen libres; los que ya tienen asesoría se conservan como horarios sueltos.
 app.delete('/api/series/:id', auth('docente'), (req, res) => {
@@ -343,6 +352,65 @@ app.delete('/api/series/:id', auth('docente'), (req, res) => {
     run('UPDATE horarios SET serie_id=NULL WHERE serie_id=?', s.id); run('DELETE FROM series WHERE id=?', s.id); db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
   res.json({ ok: true, quitados, conservados });
+});
+// ---- Recordatorios: un correo al estudiante y al docente unas horas antes de cada asesoría CONFIRMADA ----
+// RECORDATORIO_HORAS = con cuántas horas de anticipación (24 por defecto; 0 lo apaga). Se revisa cada 5 minutos. La marca asesorias.recordatorio evita repetirlo aunque el
+// servidor se reinicie, y se pone en 1 al confirmar cuando ya falta menos que el aviso (el correo de confirmación sirve de recordatorio). Si TODOS los envíos fallan
+// (SMTP caído) la marca se quita y se reintenta en la siguiente revisión, mientras la asesoría no haya empezado.
+const horasRecordatorio = () => { const v = process.env.RECORDATORIO_HORAS; if (v === undefined || v.trim() === '') return 24; const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 168 ? n : 24; };
+const aEpoch = (fecha, hora) => Date.parse(`${fecha}T${hora}:00Z`);                // fecha y hora LOCALES tratadas como una línea de tiempo continua (sin zona) para restarlas
+const minutosHasta = (fecha, hora) => { const n = ahoraLocal(); return (aEpoch(fecha, hora) - aEpoch(n.fecha, n.hora)) / 60e3; };
+async function revisarRecordatorios() {
+  const horas = horasRecordatorio(); if (!horas) return 0;
+  const n = ahoraLocal(), lim = new Date(aEpoch(n.fecha, n.hora) + horas * 3600e3).toISOString();
+  const pendientes = q(`SELECT a.id FROM asesorias a JOIN horarios h ON h.id=a.horario_id WHERE a.estado='confirmada' AND a.recordatorio=0
+    AND h.fecha||' '||h.hora > ? AND h.fecha||' '||h.hora <= ? ORDER BY h.fecha,h.hora`, `${n.fecha} ${n.hora}`, `${lim.slice(0, 10)} ${lim.slice(11, 16)}`);
+  let enviados = 0;
+  for (const { id } of pendientes) {
+    if (!run("UPDATE asesorias SET recordatorio=1 WHERE id=? AND recordatorio=0 AND estado='confirmada'", id).changes) continue;
+    const d = detalle(id), para = [...new Set([d.est_email, d.doc_email])], cub = one('SELECT cubiculo FROM docentes WHERE id=?', d.docente_id)?.cubiculo;
+    const fallos = await notificar(id, para, 'SAE · Recordatorio de asesoría', `Recordatorio: el ${d.fecha} a las ${d.hora} tienes una asesoría de ${d.materia}.\nDocente: ${d.doc_nombre}${cub ? ` (${cub})` : ''}\nEstudiante: ${d.est_nombre}\n\nSi no vas a poder asistir, cancélala en el sistema (${BASE.replace(/\/+$/, '')}/#mis) para liberar el horario.`);
+    if (fallos >= para.length) run('UPDATE asesorias SET recordatorio=0 WHERE id=?', id); else enviados++;
+  }
+  return enviados;
+}
+app.revisarRecordatorios = revisarRecordatorios;
+
+// ---- Reporte de inasistencias: del docente (solo las suyas) o de toda la Unidad (secretaría) en un periodo, por la fecha de la asesoría ----
+const MAX_DIAS_REPORTE = 400;
+function periodoReporte(query) {
+  const hoy = ahoraLocal().fecha, hasta = query.hasta || hoy, desde = query.desde || sumarDias(hasta, -29);
+  if (!fechaValida(desde) || !fechaValida(hasta) || desde > hasta) return { error: 'Revisa las fechas: la inicial debe ser anterior o igual a la final.' };
+  if ((Date.parse(hasta) - Date.parse(desde)) / 864e5 + 1 > MAX_DIAS_REPORTE) return { error: `El periodo no puede pasar de ${MAX_DIAS_REPORTE} días.` };
+  return { desde, hasta };
+}
+const filasReporte = (user, desde, hasta) => q(`SELECT a.id, a.estado, a.materia, h.fecha, h.hora, a.docente_id, du.nombre docente, e.matricula, e.nombre estudiante
+  FROM asesorias a JOIN horarios h ON h.id=a.horario_id JOIN users e ON e.id=a.estudiante_id JOIN docentes d ON d.id=a.docente_id JOIN users du ON du.id=d.user_id
+  WHERE h.fecha BETWEEN ? AND ? ${user.rol === 'docente' ? 'AND d.user_id=?' : ''} ORDER BY h.fecha, h.hora`, desde, hasta, ...(user.rol === 'docente' ? [user.id] : []));
+const porcentaje = (a, b) => b ? Math.round(a / b * 1000) / 10 : null;          // 1 decimal; null si no hay con qué comparar
+app.get('/api/reporte', auth('docente', 'secretaria'), (req, res) => {
+  const p = periodoReporte(req.query); if (p.error) return res.status(400).json({ error: p.error });
+  const n = ahoraLocal(), ahora = `${n.fecha} ${n.hora}`, cuenta = () => ({ total: 0, realizadas: 0, inasistencias: 0, canceladas: 0, sinCerrar: 0, proximas: 0 });
+  const tot = cuenta(), docs = new Map(), ests = new Map();
+  for (const f of filasReporte(req.user, p.desde, p.hasta)) {
+    const k = f.estado === 'realizada' ? 'realizadas' : f.estado === 'inasistencia' ? 'inasistencias' : f.estado === 'cancelada' ? 'canceladas' : `${f.fecha} ${f.hora}` <= ahora ? 'sinCerrar' : 'proximas';
+    const d = docs.get(f.docente_id) || { docente_id: f.docente_id, nombre: f.docente, ...cuenta() }; docs.set(f.docente_id, d);
+    for (const c of [tot, d]) { c.total++; c[k]++; }
+    if (k === 'realizadas' || k === 'inasistencias') { const e = ests.get(f.matricula) || { matricula: f.matricula, nombre: f.estudiante, inasistencias: 0, realizadas: 0, ultima: null }; ests.set(f.matricula, e);
+      if (k === 'inasistencias') { e.inasistencias++; e.ultima = e.ultima && e.ultima > f.fecha ? e.ultima : f.fecha; } else e.realizadas++; }
+  }
+  const tasa = c => ({ ...c, tasaInasistencia: porcentaje(c.inasistencias, c.inasistencias + c.realizadas) });   // inasistencias entre las asesorías que ya se cerraron como realizada o inasistencia
+  res.json({ desde: p.desde, hasta: p.hasta, alcance: req.user.rol === 'docente' ? 'propio' : 'todos', totales: tasa(tot),
+    porDocente: [...docs.values()].map(tasa).sort((a, b) => b.inasistencias - a.inasistencias || a.nombre.localeCompare(b.nombre, 'es')),
+    estudiantes: [...ests.values()].filter(e => e.inasistencias).sort((a, b) => b.inasistencias - a.inasistencias || a.nombre.localeCompare(b.nombre, 'es')) });
+});
+// CSV para Excel (UTF-8 con BOM). Las celdas que empiecen con = + - @ se neutralizan para que no se interpreten como fórmulas.
+const celdaCsv = v => { let t = String(v ?? ''); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return /[",\n\r;]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+app.get('/api/reporte/inasistencias.csv', auth('docente', 'secretaria'), (req, res) => {
+  const p = periodoReporte(req.query); if (p.error) return res.status(400).json({ error: p.error });
+  const filas = filasReporte(req.user, p.desde, p.hasta).filter(f => f.estado === 'inasistencia');
+  const csv = ['fecha,hora,docente,matricula,estudiante,materia', ...filas.map(f => [f.fecha, f.hora, f.docente, f.matricula, f.estudiante, f.materia].map(celdaCsv).join(','))].join('\r\n') + '\r\n';
+  res.set({ 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="inasistencias_${p.desde}_${p.hasta}.csv"` }).send('﻿' + csv);
 });
 app.get('/api/notificaciones', auth('secretaria'), (req, res) => res.json(q('SELECT * FROM notificaciones ORDER BY id DESC LIMIT 100')));
 app.get('/api/qr', async (req, res) => res.json({ url: BASE, png: await QRCode.toDataURL(BASE, { margin: 1, width: 320 }) }));
@@ -367,5 +435,6 @@ if (require.main === module) {
   if (demo) require('./seed')(db);
   else if (!db.prepare('SELECT COUNT(*) n FROM users').get().n) console.log('Aviso: la base no tiene usuarios. Para probar con datos de demostración: npm run demo. Para crear la cuenta de la secretaría: npm run crear-usuario (ver docs).');
   app.listen(PORT, () => console.log(`SAE en ${BASE}`));
+  if (horasRecordatorio()) { const tic = () => revisarRecordatorios().catch(e => console.error('Recordatorios:', e.message)); setTimeout(tic, 10e3); setInterval(tic, 5 * 60e3); console.log(`Recordatorios de asesoría: ${horasRecordatorio()} h antes.`); }
 }
 app.db = db; module.exports = app;

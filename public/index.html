@@ -29,7 +29,7 @@ label{font-size:.88rem;color:var(--mut);font-weight:500}
 .tag{font-size:.8rem;font-weight:600;padding:.15rem .65rem;border-radius:99px;border:1px solid var(--line);display:inline-flex;align-items:center;gap:.35rem;white-space:nowrap}
 .tag::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
 .pendiente{color:#8a5a00;border-color:#e8c46a;background:#fff8e6}.confirmada{color:var(--ok);border-color:#9fd3b8;background:#eaf7f0}
-.realizada{color:var(--mut)}.cancelada{color:var(--bad);border-color:#f0b5b0;background:#fdeeed}
+.realizada{color:var(--mut)}.cancelada,.inasistencia{color:var(--bad);border-color:#f0b5b0;background:#fdeeed}
 .slots{display:flex;flex-wrap:wrap;gap:.5rem;margin:.6rem 0 1rem}
 .slots button{background:var(--card);color:var(--ink);border:1px solid var(--line);font-size:.92rem;padding:.45rem .8rem;box-shadow:none}
 .slots button:hover{border-color:var(--gold);filter:none}
@@ -61,6 +61,8 @@ a{color:var(--navy)}@media(prefers-color-scheme:dark){a{color:var(--gold2)}}
 #l .card:after{content:"";display:block;clear:both}
 #l .card .gold{float:right;margin-top:-.2rem}
 img[alt^="Código"]{border-radius:12px;border:1px solid var(--line);padding:6px;background:#fff}
+/* Reporte: tarjetas de cifras compactas y tablas que se deslizan sin recortar columnas */
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.8rem;margin:.8rem 0}.stats .card{padding:.8rem 1rem}.stats h2{margin:.2rem 0 0}.rep{width:100%;border-collapse:collapse}.rep th,.rep td{padding:.5rem .8rem;text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
 @media(max-width:560px){header{gap:.6rem}nav{flex:1 1 100%;order:3}#who{width:100%;justify-content:space-between}}
 </style></head><body>
 <header><b>SAE</b><nav id="nav" aria-label="Principal"></nav><span id="who" class="mut" style="color:#cfd8e8"></span></header>
@@ -77,12 +79,13 @@ const rutas={
   catalogo:{roles:['estudiante','docente','secretaria'],t:'Docentes'},
   mis:{roles:['estudiante','docente','secretaria'],t:'Historial'},
   agenda:{roles:['docente'],t:'Mi disponibilidad'},
+  reporte:{roles:['docente','secretaria'],t:'Reporte'},
   bitacora:{roles:['secretaria'],t:'Notificaciones'},
   qr:{roles:['estudiante','docente','secretaria'],t:'Código QR'}};
 async function init(){U=(await api('/me')).user;nav()}
 function nav(){const r=location.hash.slice(1)||'catalogo',dm=/^docente\/(\d{1,9})$/.exec(r);$('#who').innerHTML=U?`${esc(U.nombre)} (${U.rol}) <button class="ghost" style="color:#fff;border-color:#4a5d82" onclick="salir()">Salir</button>`:'';
   $('#nav').innerHTML=U?Object.entries(rutas).filter(([k,v])=>v.roles.includes(U.rol)).map(([k,v])=>`<a href="#${k}" class="${k===r?'on':''}">${v.t}</a>`).join(''):'';
-  if(!U)return login();if(dm)return docente(+dm[1]);({catalogo,mis,agenda,bitacora,qr}[r]||catalogo)()}
+  if(!U)return login();if(dm)return docente(+dm[1]);({catalogo,mis,agenda,reporte,bitacora,qr}[r]||catalogo)()}
 addEventListener('hashchange',nav);
 async function salir(){await api('/logout','POST');U=null;nav()}
 function login(reg){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Unidad Académica de Economía · UAN</span><h1>Encuentra a tu docente y agenda tu asesoría.</h1>
@@ -142,10 +145,10 @@ async function enviar(){if(!sel)return toast('Elige un horario.',1);try{await ap
 async function mis(){const a=await api('/asesorias');$('#app').innerHTML=`<h2>Historial de asesorías</h2>`+(a.map(x=>`<div class="card"><div class="row" style="justify-content:space-between"><b>${esc(x.materia)}</b><span class="tag ${x.estado}">${x.estado}</span></div>
   <div class="mut">${fecha(x.fecha)} · ${x.hora} · ${U.rol==='docente'?'Estudiante: '+esc(x.estudiante):'Docente: '+esc(x.docente)}${U.rol==='secretaria'?' · Estudiante: '+esc(x.estudiante):''}</div><p>${esc(x.duda)}</p>
   ${acciones(x)}</div>`).join('')||'<p class="mut">Aún no hay asesorías. Ve a Docentes para agendar la primera.</p>')}
-function acciones(x){if(x.estado==='cancelada'||x.estado==='realizada')return'';
-  if(U.rol==='docente')return(x.estado==='pendiente'?`<button onclick="estado(${x.id},'confirmada')">Confirmar</button> `:`<button onclick="estado(${x.id},'realizada')">Marcar realizada</button> `)+`<button class="ghost" onclick="estado(${x.id},'cancelada')">Cancelar</button>`;
+function acciones(x){if(['cancelada','realizada','inasistencia'].includes(x.estado))return'';
+  if(U.rol==='docente')return(x.estado==='pendiente'?`<button onclick="estado(${x.id},'confirmada')">Confirmar</button> `:`<button onclick="estado(${x.id},'realizada')">Marcar realizada</button> `+(x.empezo?`<button class="ghost" onclick="estado(${x.id},'inasistencia')" title="El estudiante no se presentó">No asistió</button> `:''))+`<button class="ghost" onclick="estado(${x.id},'cancelada')">Cancelar</button>`;
   return U.rol==='estudiante'?`<button class="ghost" onclick="estado(${x.id},'cancelada')">Cancelar asesoría</button>`:''}
-async function estado(id,e){try{await api('/asesorias/'+id,'PATCH',{estado:e});toast('Asesoría '+e+'.');mis()}catch(x){toast(x.message,1)}}
+async function estado(id,e){try{await api('/asesorias/'+id,'PATCH',{estado:e});toast(e==='inasistencia'?'Inasistencia registrada.':'Asesoría '+e+'.');mis()}catch(x){toast(x.message,1)}}
 const DIAS=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'], DIAS_LARGO=['lunes','martes','miércoles','jueves','viernes','sábado','domingo'];
 async function agenda(){const [hs,ss]=await Promise.all([api('/mis-horarios'),api('/series')]),hoy=new Date().toLocaleDateString('en-CA');
   $('#app').innerHTML=`<h2>Mi disponibilidad</h2>
@@ -168,6 +171,20 @@ ${ss.length?`<h3>Mis series</h3>`+ss.map(x=>`<div class="card row" style="justif
 async function quitarHorario(id){try{await api('/horarios/'+id,'DELETE');toast('Horario quitado.');agenda()}catch(x){toast(x.message,1)}}
 async function quitarSerie(id,res){if(!confirm('Se quitarán los horarios de esta serie que siguen libres'+(res?`; los ${res} que ya tienen asesoría se conservan`:'')+'. ¿Continuar?'))return;
   try{const r=await api('/series/'+id,'DELETE');toast(`Se quitaron ${r.quitados} horarios`+(r.conservados?` y se conservaron ${r.conservados} con asesoría`:'')+'.');agenda()}catch(x){toast(x.message,1)}}
+// Reporte de inasistencias: del docente (las suyas) o de toda la Unidad (secretaría), por la fecha de la asesoría; con descarga en CSV para Excel.
+async function reporte(){const hoy=new Date().toLocaleDateString('en-CA'),hace=new Date(Date.now()-29*864e5).toLocaleDateString('en-CA');
+  $('#app').innerHTML=`<h2>Reporte de inasistencias</h2><form class="card row" id="rf" style="align-items:flex-end;flex-wrap:wrap;gap:1rem"><div><label for="r1">Desde</label><input id="r1" type="date" required value="${hace}"></div><div><label for="r2">Hasta</label><input id="r2" type="date" required value="${hoy}"></div>
+<button class="gold">Ver reporte</button><a class="btn" id="rc" href="#">Descargar CSV</a></form><div id="rr"></div>`;
+  const pintar=async()=>{const qs=`desde=${$('#r1').value}&hasta=${$('#r2').value}`;$('#rc').href='/api/reporte/inasistencias.csv?'+qs;
+    try{const r=await api('/reporte?'+qs),t=r.totales,pc=v=>v===null?'—':v+' %';
+      $('#rr').innerHTML=`<p class="mut">${r.alcance==='propio'?'Solo tus asesorías.':'Todas las asesorías de la Unidad.'} Del ${fecha(r.desde)} al ${fecha(r.hasta)}. La tasa de inasistencia es el porcentaje de las asesorías ya cerradas (realizadas o con inasistencia) en que el estudiante no se presentó.</p>
+<div class="stats"><div class="card"><div class="mut">Asesorías</div><h2>${t.total}</h2></div><div class="card"><div class="mut">Realizadas</div><h2>${t.realizadas}</h2></div><div class="card"><div class="mut">Inasistencias</div><h2>${t.inasistencias}</h2></div>
+<div class="card"><div class="mut">Tasa de inasistencia</div><h2>${pc(t.tasaInasistencia)}</h2></div><div class="card"><div class="mut">Canceladas</div><h2>${t.canceladas}</h2></div><div class="card"><div class="mut">Próximas</div><h2>${t.proximas}</h2></div></div>
+${t.sinCerrar?`<p class="tag pendiente" style="white-space:normal">${t.sinCerrar} asesoría${t.sinCerrar===1?'':'s'} ya pasó y sigue sin cerrarse (el docente debe marcarla como realizada o con inasistencia).</p>`:''}
+${r.alcance==='todos'?`<h3>Por docente</h3><div class="card" style="overflow-x:auto"><table class="rep"><thead><tr><th>Docente</th><th>Asesorías</th><th>Realizadas</th><th>Inasistencias</th><th>Tasa</th><th>Sin cerrar</th></tr></thead><tbody>${r.porDocente.map(d=>`<tr><td>${esc(d.nombre)}</td><td>${d.total}</td><td>${d.realizadas}</td><td>${d.inasistencias}</td><td>${pc(d.tasaInasistencia)}</td><td>${d.sinCerrar}</td></tr>`).join('')}</tbody></table></div>`:''}
+<h3>Estudiantes con inasistencias</h3>${r.estudiantes.length?`<div class="card" style="overflow-x:auto"><table class="rep"><thead><tr><th>Matrícula</th><th>Estudiante</th><th>Inasistencias</th><th>Asistió</th><th>Última</th></tr></thead><tbody>${r.estudiantes.map(e=>`<tr><td>${esc(e.matricula)}</td><td>${esc(e.nombre)}</td><td>${e.inasistencias}</td><td>${e.realizadas}</td><td>${fecha(e.ultima)}</td></tr>`).join('')}</tbody></table></div>`:'<p class="mut">No hay inasistencias en este periodo.</p>'}`}
+    catch(x){$('#rr').innerHTML='';toast(x.message,1)}};
+  $('#rf').onsubmit=e=>{e.preventDefault();pintar()};pintar()}
 async function bitacora(){const n=await api('/notificaciones');$('#app').innerHTML=`<h2>Notificaciones registradas</h2><p class="mut">Copia de cada confirmación. “Pendiente” significa que el servidor de correo (SMTP) no está configurado.</p>`+
   n.map(x=>`<div class="card"><b>${esc(x.asunto)}</b> <span class="tag">${x.enviado?'enviado':'pendiente'}</span><div class="mut">${esc(x.destinatario)} · ${esc(x.fecha)}</div><pre style="white-space:pre-wrap;margin:.4rem 0 0">${esc(x.cuerpo)}</pre></div>`).join('')}
 async function qr(){const r=await api('/qr'),ds=U.rol==='estudiante'?[]:await api('/qr/docentes'),local=/^https?:\/\/(localhost|127\.)/.test(r.url);

@@ -18,10 +18,10 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 ### Archivos
 | Archivo | Función |
 |---|---|
-| `server.js` | API, sesiones, permisos, correos, QR |
+| `server.js` | API, sesiones, permisos, correos, recordatorios, reportes, QR |
 | `seed.js` | Datos de demostración (padrón, docentes, horarios); solo se cargan con `npm run demo` |
 | `scripts/crear-usuario.js` | Crea cuentas de secretaría o docente con contraseña propia (`npm run crear-usuario`) |
-| `public/index.html` | Interfaz completa (login, catálogo, agendar, historial, disponibilidad, QR) |
+| `public/index.html` | Interfaz completa (login, catálogo, agendar, historial, disponibilidad, reporte, QR) |
 | `test/flujo.test.js` | Prueba integral automatizada |
 | `docs/` | Este documento y la tesis |
 
@@ -46,7 +46,9 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 - **QR por docente:** cada docente tiene un QR que apunta a su ficha con los horarios libres (`<BASE_URL>/#docente/<id>`). En la sección *Código QR* el docente ve y descarga el suyo; la secretaría ve el de todos y puede **imprimirlos** (una hoja por docente, con su nombre y cubículo). Pensado para pegarlo en la puerta del cubículo o en el material de clase: quien lo escanea llega directo a los horarios de ese docente. Si no tiene sesión, el enlace se conserva al iniciar sesión o al registrarse (incluida la verificación del correo) y lo lleva directo al docente; si el docente ya no existe, muestra un aviso claro. El enlace no da acceso extra: solo muestra lo que ya ve cualquiera con sesión, y reservar sigue siendo solo para estudiantes (`GET /api/docentes/:id`, `GET /api/qr/docentes`).
 - **Horarios vencidos:** un horario que ya empezó no se puede reservar (400, sin consumirlo) y los listados no lo ofrecen; se calcula en la hora local de la facultad (`ZONA_HORARIA`), no en UTC.
 - **Reserva atómica:** `UPDATE horarios SET libre=0 WHERE id=? AND libre=1`; si dos estudiantes pulsan a la vez, solo uno gana.
-- **Ciclo de vida de una asesoría:** pendiente → confirmada → realizada; se puede cancelar mientras esté pendiente o confirmada. *Cancelada* y *realizada* son definitivas: no se cancelan de nuevo ni se reabren (responde 409), de modo que un horario liberado por una cancelación no puede volver a liberarse bajo los pies de quien ya lo reservó. El docente se identifica por su cuenta, no por su correo.
+- **Ciclo de vida de una asesoría:** pendiente → confirmada → realizada o *inasistencia* (el estudiante no se presentó); se puede cancelar mientras esté pendiente o confirmada. *Cancelada*, *realizada* e *inasistencia* son definitivas: no se cancelan de nuevo ni se reabren (responde 409), de modo que un horario liberado por una cancelación no puede volver a liberarse bajo los pies de quien ya lo reservó. El docente se identifica por su cuenta, no por su correo. La *inasistencia* solo la registra el docente de esa asesoría, solo desde *confirmada* y solo cuando ya llegó la hora de inicio (antes responde 409); el horario sigue ocupado y todos reciben el aviso por correo.
+- **Recordatorios:** el sistema envía un correo al estudiante y al docente `RECORDATORIO_HORAS` horas antes (24 por defecto) de cada asesoría *confirmada*, una sola vez. Revisa cada 5 minutos, la marca queda en la base (reiniciar no repite ni pierde avisos), y si el correo falla para todos se reintenta en la siguiente revisión. Si la asesoría se confirma cuando ya falta menos que el aviso, la confirmación hace de recordatorio. Sin SMTP configurado solo queda en la bitácora de notificaciones.
+- **Reporte de inasistencias** (pantalla *Reporte*, `GET /api/reporte` y `GET /api/reporte/inasistencias.csv`): el docente ve solo lo suyo y la secretaría toda la Unidad, con totales, tasa de inasistencia (inasistencias entre realizadas + inasistencias), desglose por docente y estudiantes con inasistencias. Por defecto cubre los últimos 30 días (máximo 400); el periodo se filtra por la fecha de la asesoría. Se resalta cuántas asesorías ya pasaron sin cerrarse. El CSV (UTF-8 con BOM, abre bien en Excel) lista las inasistencias y neutraliza celdas que empiecen con `=`, `+`, `-` o `@`.
 - **Permisos por rol:** el estudiante agenda y cancela las suyas; el docente confirma, realiza o cancela las suyas; la secretaría ve todo y la bitácora.
 - **Recuperación de contraseña** (estudiantes, docentes y secretaría): "Olvidé mi contraseña" envía un código de 6 dígitos al correo de la cuenta (mismas reglas que el registro: 15 min, 5 intentos, 1 envío por minuto, 5 por hora). La respuesta es la misma exista o no la matrícula, así que no revela quién tiene cuenta. Al cambiar la contraseña se **cierran todas las sesiones abiertas** y se avisa por correo; docentes y secretaría necesitan 10 caracteres o más y no pueden usar las contraseñas de demostración. Los intentos fallidos de recuperación llevan su propio cupo (no se mezclan con los de iniciar sesión).
 - **Correos:** si hay SMTP configurado se envían; si no, se guardan en la bitácora con "pendiente" para que el sistema funcione igual en pruebas.
@@ -56,7 +58,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 |---|---|
 | 1.3.1 Registro y acceso | `/api/registro`, `/api/registro/confirmar`, `/api/login`, `/api/recuperar`, `/api/recuperar/confirmar`, `padron`, `codigos` |
 | 1.3.2 Catálogo de docentes | `/api/docentes?q=` |
-| 1.3.3 Agendamiento | `/api/asesorias` (POST), `/api/horarios`, `/api/mis-horarios`, `/api/series`, `/api/docentes/:id`, `/api/qr/docentes` |
+| 1.3.3 Agendamiento | `/api/asesorias` (POST), `/api/horarios`, `/api/mis-horarios`, `/api/series`, `/api/docentes/:id`, `/api/qr/docentes`, `/api/reporte`, `/api/reporte/inasistencias.csv` |
 | 1.3.4 Confirmaciones | función `notificar()`, tabla `notificaciones` |
 | 1.3.5 Historial | `/api/asesorias` (GET), vista "Historial" |
 | 1.2.4 Seguridad y accesibilidad | roles, cookie segura, diseño responsivo, foco visible |
@@ -91,6 +93,7 @@ SQLite (data/sae.db)  +  notificaciones (SMTP o bitácora)
 | `DOMINIOS_CORREO` | Dominios aceptados para el correo del estudiante cuando el padrón no lo trae (separados por coma; incluye subdominios; `*` acepta cualquiera, no recomendado) | `uan.edu.mx` |
 | `DB_FILE` | Ruta de la base | `data/sae.db` |
 | `ZONA_HORARIA` | Zona horaria IANA de la facultad. Los horarios se guardan en hora local; con esta zona se decide cuáles ya pasaron (no se pueden reservar ni se ofrecen) | `America/Mazatlan` |
+| `RECORDATORIO_HORAS` | Horas de anticipación del correo recordatorio de cada asesoría confirmada (24 por defecto; máximo 168). `0` desactiva los recordatorios; un valor inválido vuelve a 24. |
 | `MAX_ASESORIAS_ACTIVAS` | Máximo de asesorías activas por estudiante (pendientes o confirmadas cuyo horario aún no llega); evita que una cuenta acapare los horarios de un docente. Las canceladas, las realizadas y las que ya pasaron no cuentan | `2` |
 | `TRUST_PROXY` | Número de proxies de confianza delante de la app (ej. `1` con Nginx); necesario para que el límite de intentos vea la IP real | sin proxy: desactivado |
 

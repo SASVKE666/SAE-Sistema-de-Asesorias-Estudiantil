@@ -2,8 +2,9 @@
 Plataforma web para agendar y dar seguimiento a las asesorías académicas de la Unidad Académica de Economía, UAN.
 
 - **Estudiantes:** buscan docente o materia (o escanean el QR de un docente), ven horarios libres, agendan y reciben confirmación.
-- **Docentes:** publican su disponibilidad (horarios sueltos o repetidos cada semana), confirman y marcan asesorías realizadas.
-- **Secretaría:** recibe copia de cada cita y consulta el historial.
+- **Docentes:** publican su disponibilidad (horarios sueltos o repetidos cada semana), confirman y marcan asesorías como realizadas o con inasistencia.
+- **Recordatorios:** correo al estudiante y al docente 24 h antes de cada asesoría confirmada (`RECORDATORIO_HORAS`).
+- **Secretaría:** recibe copia de cada cita, consulta el historial y el reporte de inasistencias (con exportación a CSV); cada docente ve el de sus propias asesorías.
 
 ```bash
 npm install && npm start     # http://localhost:3000
