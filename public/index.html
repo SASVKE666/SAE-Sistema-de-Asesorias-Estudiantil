@@ -63,6 +63,8 @@ a{color:var(--navy)}@media(prefers-color-scheme:dark){a{color:var(--gold2)}}
 img[alt^="Código"]{border-radius:12px;border:1px solid var(--line);padding:6px;background:#fff}
 /* Reporte: tarjetas de cifras compactas y tablas que se deslizan sin recortar columnas */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.8rem;margin:.8rem 0}.stats .card{padding:.8rem 1rem}.stats h2{margin:.2rem 0 0}.rep{width:100%;border-collapse:collapse}.rep th,.rep td{padding:.5rem .8rem;text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
+.tabs{display:flex;gap:.4rem;flex-wrap:wrap;margin:.6rem 0}.tabs button{background:transparent;color:inherit;border:1px solid var(--line)}.tabs button.on{background:var(--navy,#16264a);color:#fff;border-color:transparent}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.6rem 1rem}
 @media(max-width:560px){header{gap:.6rem}nav{flex:1 1 100%;order:3}#who{width:100%;justify-content:space-between}}
 </style></head><body>
 <header><b>SAE</b><nav id="nav" aria-label="Principal"></nav><span id="who" class="mut" style="color:#cfd8e8"></span></header>
@@ -80,12 +82,13 @@ const rutas={
   mis:{roles:['estudiante','docente','secretaria'],t:'Historial'},
   agenda:{roles:['docente'],t:'Mi disponibilidad'},
   reporte:{roles:['docente','secretaria'],t:'Reporte'},
+  admin:{roles:['secretaria'],t:'Administración'},
   bitacora:{roles:['secretaria'],t:'Notificaciones'},
   qr:{roles:['estudiante','docente','secretaria'],t:'Código QR'}};
 async function init(){U=(await api('/me')).user;nav()}
 function nav(){const r=location.hash.slice(1)||'catalogo',dm=/^docente\/(\d{1,9})$/.exec(r);$('#who').innerHTML=U?`${esc(U.nombre)} (${U.rol}) <button class="ghost" style="color:#fff;border-color:#4a5d82" onclick="salir()">Salir</button>`:'';
   $('#nav').innerHTML=U?Object.entries(rutas).filter(([k,v])=>v.roles.includes(U.rol)).map(([k,v])=>`<a href="#${k}" class="${k===r?'on':''}">${v.t}</a>`).join(''):'';
-  if(!U)return login();if(dm)return docente(+dm[1]);({catalogo,mis,agenda,reporte,bitacora,qr}[r]||catalogo)()}
+  if(!U)return login();if(dm)return docente(+dm[1]);({catalogo,mis,agenda,reporte,admin,bitacora,qr}[r]||catalogo)()}
 addEventListener('hashchange',nav);
 async function salir(){await api('/logout','POST');U=null;nav()}
 function login(reg){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Unidad Académica de Economía · UAN</span><h1>Encuentra a tu docente y agenda tu asesoría.</h1>
@@ -185,6 +188,47 @@ ${r.alcance==='todos'?`<h3>Por docente</h3><div class="card" style="overflow-x:a
 <h3>Estudiantes con inasistencias</h3>${r.estudiantes.length?`<div class="card" style="overflow-x:auto"><table class="rep"><thead><tr><th>Matrícula</th><th>Estudiante</th><th>Inasistencias</th><th>Asistió</th><th>Última</th></tr></thead><tbody>${r.estudiantes.map(e=>`<tr><td>${esc(e.matricula)}</td><td>${esc(e.nombre)}</td><td>${e.inasistencias}</td><td>${e.realizadas}</td><td>${fecha(e.ultima)}</td></tr>`).join('')}</tbody></table></div>`:'<p class="mut">No hay inasistencias en este periodo.</p>'}`}
     catch(x){$('#rr').innerHTML='';toast(x.message,1)}};
   $('#rf').onsubmit=e=>{e.preventDefault();pintar()};pintar()}
+// Administración (solo secretaría): docentes, estudiantes, padrón y actividad. Cada acción queda en la bitácora del servidor.
+let adm='docentes',admDocs=[],admPad=[];
+async function admin(){$('#app').innerHTML=`<h2>Administración</h2><div class="tabs noprint" role="tablist">${[['docentes','Docentes'],['estudiantes','Estudiantes'],['padron','Padrón'],['actividad','Actividad']].map(([k,t])=>`<button role="tab" aria-selected="${k===adm}" class="${k===adm?'on':''}" onclick="adm='${k}';admin()">${t}</button>`).join('')}</div><div id="ad"></div>`;
+  try{await({docentes:admDocentes,estudiantes:admEstudiantes,padron:admPadron,actividad:admActividad}[adm]||admDocentes)()}catch(x){toast(x.message,1)}}
+const estadoTag=a=>`<span class="tag ${a?'confirmada':'cancelada'}">${a?'activo':'desactivado'}</span>`;
+async function admDocentes(){admDocs=await api('/admin/docentes');
+  $('#ad').innerHTML=`<form class="card" id="df"><h3 id="dt">Agregar docente</h3><div class="fgrid"><div><label for="d1">Clave</label><input id="d1" required maxlength="40" placeholder="Ej. DOC010" autocomplete="off"></div>
+<div><label for="d2">Nombre</label><input id="d2" required maxlength="120" placeholder="Dra. Ana Pérez"></div><div><label for="d3">Correo institucional</label><input id="d3" type="email" required maxlength="120"></div>
+<div><label for="d4">Materias (separadas por comas)</label><input id="d4" required maxlength="200" placeholder="Estadística, Econometría"></div><div><label for="d5">Cubículo</label><input id="d5" maxlength="60"></div></div>
+<p class="mut" id="dn">No se captura contraseña: le llega un correo para que el docente elija la suya con «Olvidé mi contraseña».</p><div class="row"><button class="gold" id="dg">Agregar docente</button><button type="button" class="ghost" id="dc" style="display:none" onclick="admDocentes()">Cancelar</button></div></form>
+<div class="card" style="overflow-x:auto"><table class="rep"><thead><tr><th>Docente</th><th>Correo</th><th>Materias</th><th>Cubículo</th><th>Libres</th><th>Abiertas</th><th>Estado</th><th></th></tr></thead><tbody>${admDocs.map(d=>`<tr><td><b>${esc(d.nombre)}</b><div class="mut">${esc(d.clave)}</div></td><td>${esc(d.email)}</td><td>${esc(d.materias)}</td><td>${esc(d.cubiculo)}</td><td>${d.libres}</td><td>${d.abiertas}</td><td>${estadoTag(d.activo)}</td>
+<td><button class="ghost" onclick="editarDocente(${d.id})">Editar</button> <button class="ghost" onclick="activarDocente(${d.id},${d.activo?'false':'true'})">${d.activo?'Desactivar':'Reactivar'}</button></td></tr>`).join('')||'<tr><td colspan="8" class="mut">Todavía no hay docentes.</td></tr>'}</tbody></table></div>`;
+  $('#df').onsubmit=async e=>{e.preventDefault();const v=i=>$('#d'+i).value,ed=$('#df').dataset.id;
+    try{if(ed){await api('/admin/docentes/'+ed,'PATCH',{nombre:v(2),email:v(3),materias:v(4),cubiculo:v(5)});toast('Cambios guardados.')}
+      else{const r=await api('/admin/docentes','POST',{clave:v(1),nombre:v(2),email:v(3),materias:v(4),cubiculo:v(5)});toast(r.avisado?'Docente agregado y avisado por correo.':'Docente agregado, pero no se pudo enviar el correo: pídele que use «Olvidé mi contraseña».')}
+      admDocentes()}catch(x){toast(x.message,1)}}}
+function editarDocente(id){const d=admDocs.find(x=>x.id===id);if(!d)return;$('#df').dataset.id=id;$('#dt').textContent='Editar a '+d.nombre;
+  [d.clave,d.nombre,d.email,d.materias,d.cubiculo].forEach((x,i)=>$('#d'+(i+1)).value=x);$('#d1').disabled=true;$('#dg').textContent='Guardar cambios';$('#dc').style.display='';$('#dn').textContent='Si cambias el correo, los avisos y la recuperación de contraseña irán al nuevo.';$('#d2').focus();$('#df').scrollIntoView({behavior:'smooth'})}
+async function activarDocente(id,act){const d=admDocs.find(x=>x.id===id);if(!d)return;
+  if(!act&&!confirm(`¿Desactivar a ${d.nombre}?\n\nNo podrá entrar al sistema, dejará de aparecer en el catálogo y nadie podrá agendarle.`+(d.abiertas?`\nTiene ${d.abiertas} asesoría(s) abierta(s) que siguen ahí: avisa a esos estudiantes.`:'')))return;
+  try{await api('/admin/docentes/'+id,'PATCH',{activo:act});toast(act?'Docente reactivado.':'Docente desactivado.');admDocentes()}catch(x){toast(x.message,1)}}
+function buscador(f,ph){return`<div class="card"><label for="bq">${ph}</label><input id="bq" type="search" maxlength="60" autocomplete="off"></div>`}
+function conBusqueda(f){let t;$('#bq').oninput=()=>{clearTimeout(t);t=setTimeout(()=>f().catch(x=>toast(x.message,1)),250)};return $('#bq')}
+async function admEstudiantes(){const pintar=async()=>{const r=await api('/admin/estudiantes?q='+encodeURIComponent($('#bq')?.value||''));
+    $('#lst').innerHTML=`<p class="mut">${r.total>r.filas.length?`Mostrando ${r.filas.length} de ${r.total}: afina la búsqueda.`:`${r.total} estudiante(s) con cuenta.`}</p><div class="card" style="overflow-x:auto"><table class="rep"><thead><tr><th>Matrícula</th><th>Nombre</th><th>Correo</th><th>Abiertas</th><th>Estado</th><th></th></tr></thead><tbody>${r.filas.map(e=>`<tr><td>${esc(e.matricula)}</td><td>${esc(e.nombre)}</td><td>${esc(e.email)}</td><td>${e.abiertas}</td><td>${estadoTag(e.activo)}</td>
+<td><button class="ghost" onclick="bloquear(${e.id},${e.activo?'false':'true'},'${esc(e.matricula)}')">${e.activo?'Bloquear':'Desbloquear'}</button></td></tr>`).join('')||'<tr><td colspan="6" class="mut">Sin resultados.</td></tr>'}</tbody></table></div>`};
+  window.admRefrescar=pintar;$('#ad').innerHTML=buscador(0,'Busca por matrícula, nombre o correo')+'<div id="lst"></div>';conBusqueda(pintar);await pintar()}
+async function bloquear(id,act,m){if(!act&&!confirm(`¿Bloquear la cuenta ${m}? No podrá entrar ni agendar. Sus asesorías abiertas se conservan.`))return;
+  try{await api('/admin/estudiantes/'+id,'PATCH',{activo:act});toast(act?'Cuenta desbloqueada.':'Cuenta bloqueada.');admRefrescar()}catch(x){toast(x.message,1)}}
+async function admPadron(){const pintar=async()=>{const r=await api('/admin/padron?q='+encodeURIComponent($('#bq')?.value||''));admPad=r.filas;
+    $('#lst').innerHTML=`<p class="mut">${r.total>r.filas.length?`Mostrando ${r.filas.length} de ${r.total}: afina la búsqueda.`:`${r.total} matrícula(s) en el padrón.`}</p><div class="card" style="overflow-x:auto"><table class="rep"><thead><tr><th>Matrícula</th><th>Nombre</th><th>Correo</th><th>Cuenta</th><th></th></tr></thead><tbody>${r.filas.map(p=>`<tr><td>${esc(p.matricula)}</td><td>${esc(p.nombre)}</td><td>${esc(p.email)}</td><td><span class="tag ${p.registrado?'confirmada':'pendiente'}">${p.registrado?'registrada':'sin cuenta'}</span></td>
+<td>${p.registrado?'':`<button class="ghost" onclick="editarPadron('${esc(p.matricula)}')">Editar</button> <button class="ghost" onclick="quitarPadron('${esc(p.matricula)}')">Quitar</button>`}</td></tr>`).join('')||'<tr><td colspan="5" class="mut">Sin resultados.</td></tr>'}</tbody></table></div>`};
+  window.admRefrescar=pintar;
+  $('#ad').innerHTML=`<form class="card" id="pf"><h3 id="pt">Agregar al padrón</h3><div class="fgrid"><div><label for="p1">Matrícula</label><input id="p1" required maxlength="40" autocomplete="off"></div><div><label for="p2">Nombre</label><input id="p2" required maxlength="120"></div><div><label for="p3">Correo institucional (opcional)</label><input id="p3" type="email" maxlength="120"></div></div>
+<p class="mut">Para cargar muchas matrículas a la vez usa el archivo CSV: <code>npm run cargar-padron -- archivo.csv</code>.</p><div class="row"><button class="gold" id="pg">Agregar</button><button type="button" class="ghost" id="pc" style="display:none" onclick="admPadron()">Cancelar</button></div></form>`+buscador(0,'Busca por matrícula, nombre o correo')+'<div id="lst"></div>';
+  $('#pf').onsubmit=async e=>{e.preventDefault();const ed=$('#pf').dataset.m;try{if(ed){await api('/admin/padron/'+encodeURIComponent(ed),'PATCH',{nombre:$('#p2').value,email:$('#p3').value});toast('Cambios guardados.')}else{await api('/admin/padron','POST',{matricula:$('#p1').value,nombre:$('#p2').value,email:$('#p3').value});toast('Agregado al padrón.')}admPadron()}catch(x){toast(x.message,1)}};
+  conBusqueda(pintar);await pintar()}
+function editarPadron(m){const p=admPad.find(x=>x.matricula===m);if(!p)return;$('#pf').dataset.m=m;$('#pt').textContent='Editar '+m;$('#p1').value=m;$('#p1').disabled=true;$('#p2').value=p.nombre;$('#p3').value=p.email;$('#pg').textContent='Guardar cambios';$('#pc').style.display='';$('#p2').focus();$('#pf').scrollIntoView({behavior:'smooth'})}
+async function quitarPadron(m){if(!confirm(`¿Quitar la matrícula ${m} del padrón? Si esa persona aún no se registró, ya no podrá hacerlo.`))return;
+  try{await api('/admin/padron/'+encodeURIComponent(m),'DELETE');toast('Quitada del padrón.');admRefrescar()}catch(x){toast(x.message,1)}}
+async function admActividad(){const a=await api('/admin/actividad');$('#ad').innerHTML=`<p class="mut">Lo último que se hizo desde este panel (máximo 50 movimientos).</p><div class="card" style="overflow-x:auto"><table class="rep"><thead><tr><th>Cuándo</th><th>Quién</th><th>Qué</th><th>Detalle</th></tr></thead><tbody>${a.map(x=>`<tr><td>${esc(new Date(x.fecha.replace(' ','T')+'Z').toLocaleString('es-MX',{dateStyle:'short',timeStyle:'short'}))}</td><td>${esc(x.usuario)}</td><td>${esc(x.accion)}</td><td>${esc(x.detalle)}</td></tr>`).join('')||'<tr><td colspan="4" class="mut">Todavía no hay movimientos.</td></tr>'}</tbody></table></div>`}
 async function bitacora(){const n=await api('/notificaciones');$('#app').innerHTML=`<h2>Notificaciones registradas</h2><p class="mut">Copia de cada confirmación. “Pendiente” significa que el servidor de correo (SMTP) no está configurado.</p>`+
   n.map(x=>`<div class="card"><b>${esc(x.asunto)}</b> <span class="tag">${x.enviado?'enviado':'pendiente'}</span><div class="mut">${esc(x.destinatario)} · ${esc(x.fecha)}</div><pre style="white-space:pre-wrap;margin:.4rem 0 0">${esc(x.cuerpo)}</pre></div>`).join('')}
 async function qr(){const r=await api('/qr'),ds=U.rol==='estudiante'?[]:await api('/qr/docentes'),local=/^https?:\/\/(localhost|127\.)/.test(r.url);
