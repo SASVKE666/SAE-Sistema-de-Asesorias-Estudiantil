@@ -37,6 +37,9 @@ if (!db.prepare('PRAGMA table_info(asesorias)').all().some(c => c.name === 'reco
 // Cuentas desactivables (panel de administración): una cuenta desactivada no puede entrar ni conserva sesiones abiertas. Y una bitácora de lo que hace la secretaría.
 if (!db.prepare('PRAGMA table_info(users)').all().some(c => c.name === 'activo')) db.exec('ALTER TABLE users ADD COLUMN activo INTEGER NOT NULL DEFAULT 1');
 db.exec(`CREATE TABLE IF NOT EXISTS auditoria(id INTEGER PRIMARY KEY, fecha TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, usuario_id INTEGER, usuario TEXT NOT NULL, accion TEXT NOT NULL, detalle TEXT NOT NULL)`);
+// Una matrícula o clave es una sola aunque se escriba distinto ("doc001" = "DOC001"): índices únicos sin distinguir mayúsculas. Si una base antigua ya tiene dos que solo difieren en eso, avisa en vez de fallar.
+for (const t of ['users', 'padron']) try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ${t}_matricula_ci ON ${t}(matricula COLLATE NOCASE)`); }
+catch { console.warn(`AVISO: la tabla ${t} tiene matrículas que solo difieren en mayúsculas/minúsculas; corrígelas (panel de administración) para que no haya cuentas duplicadas.`); }
 // Las fechas y horas de los horarios son hora local de la Unidad Académica (no UTC): "ahora" se calcula en esa zona (ZONA_HORARIA, por defecto Nayarit/Pacífico).
 const ZONA_DEFECTO = 'America/Mazatlan';
 function ahoraLocal() {
@@ -72,6 +75,10 @@ const secretarias = () => q("SELECT email FROM users WHERE rol='secretaria'").ma
 // ---- Códigos por correo: 6 dígitos, un solo uso, caducan a los 15 min ----
 // Defensas: máx. 5 intentos por código, 60 s entre envíos y 5 envíos por hora y matrícula (para que nadie pueda llenar el buzón de otra persona).
 const CODIGO_VIDA = 15 * 60e3, ESPERA_REENVIO = 60e3, VENTANA_ENVIOS = 3600e3, MAX_ENVIOS = 5, MAX_INTENTOS_CODIGO = 5;
+// Matrículas y claves se buscan sin distinguir mayúsculas (índices únicos NOCASE más abajo); lo que sigue usa SIEMPRE la forma guardada (p.matricula, u.matricula).
+const MAT = v => typeof v === 'string' || typeof v === 'number' ? String(v).trim() : '';   // arreglos u objetos no valen como matrícula
+const cuentaPorMatricula = (m, cols = '*') => m ? one(`SELECT ${cols} FROM users WHERE matricula=? COLLATE NOCASE`, m) : null;
+const padronPorMatricula = m => m ? one('SELECT * FROM padron WHERE matricula=? COLLATE NOCASE', m) : null;
 const huella = (tipo, matricula, codigo) => crypto.createHmac('sha256', SECRET).update(`${tipo}|${matricula}|${codigo}`).digest('hex');
 const iguales = (a, b) => a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const enmascarar = c => `${c[0]}***${c.slice(c.lastIndexOf('@'))}`;
@@ -139,7 +146,7 @@ const VENTANA = 600e3, MAX_POR_CUENTA = 8, MAX_POR_IP = 100; // 8 fallos / 10 mi
 const fallos = new Map(); // clave -> marcas de tiempo de los fallos recientes
 const recientes = k => { const n = (fallos.get(k) || []).filter(t => Date.now() - t < VENTANA); n.length ? fallos.set(k, n) : fallos.delete(k); return n; };
 const limiteCon = ambito => (req, res, next) => {   // `ambito` separa los cupos: la recuperación de contraseña lleva los suyos
-  const ip = ambito + (req.ip || ''), cuenta = `${ip}|${String(req.body?.matricula ?? '').trim().toUpperCase().slice(0, 40)}`;
+  const ip = ambito + (req.ip || ''), cuenta = `${ip}|${MAT(req.body?.matricula).toUpperCase().slice(0, 40)}`;
   if (recientes(cuenta).length >= MAX_POR_CUENTA || recientes(ip).length >= MAX_POR_IP)
     return res.status(429).json({ error: 'Demasiados intentos. Espera 10 minutos.' });
   res.on('finish', () => {
@@ -158,9 +165,9 @@ const limiteRec = limiteCon('rec:');
 app.post('/api/registro', limite, async (req, res) => {
   const { matricula, email, password } = req.body || {};
   if (!matricula || typeof password !== 'string' || password.length < 8) return res.status(400).json({ error: 'Completa matrícula, correo y una contraseña de 8+ caracteres.' });
-  const p = one('SELECT * FROM padron WHERE matricula=?', String(matricula).trim());
+  const p = padronPorMatricula(MAT(matricula));
   if (!p) return res.status(403).json({ error: 'Matrícula no válida: no aparece en el padrón de la Unidad Académica.' });
-  if (one('SELECT 1 FROM users WHERE matricula=?', p.matricula)) return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta.' });
+  if (cuentaPorMatricula(p.matricula, '1')) return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta.' });
   const correo = String(p.email || email || '').trim().toLowerCase();
   if (!p.email) {
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo) || correo.length > 120) return res.status(400).json({ error: 'Escribe un correo electrónico válido.' });
@@ -173,9 +180,8 @@ app.post('/api/registro', limite, async (req, res) => {
   res.json({ ok: true, pendiente: true, correo: enmascarar(correo) });
 });
 app.post('/api/registro/confirmar', limite, (req, res) => {
-  const matricula = String(req.body?.matricula ?? '').trim(), c = comprobarCodigo('registro', matricula, req.body?.codigo);
+  const p = padronPorMatricula(MAT(req.body?.matricula)), matricula = p ? p.matricula : MAT(req.body?.matricula), c = comprobarCodigo('registro', matricula, req.body?.codigo);
   if (c.error) return res.status(c.status).json({ error: c.error });
-  const p = one('SELECT * FROM padron WHERE matricula=?', matricula);
   if (!p) return res.status(403).json({ error: 'Matrícula no válida: no aparece en el padrón de la Unidad Académica.' });
   let r; try { r = run("INSERT INTO users(matricula,nombre,email,rol,pass_hash) VALUES(?,?,?,'estudiante',?)", p.matricula, p.nombre, c.correo, c.pass_hash); }
   catch { return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta.' }); }
@@ -188,7 +194,7 @@ const passwordInvalida = (rol, pw) => pw.length < (MIN_PASS[rol] || 10) ? `La co
   : rol !== 'estudiante' && PASS_DEMO.includes(pw) ? 'Esa contraseña es la de demostración; elige otra.' : null;
 app.post('/api/recuperar', limiteRec, (req, res) => {
   const falta = sinCorreo(); if (falta) return res.status(503).json({ error: falta });
-  const matricula = String(req.body?.matricula ?? '').trim(), u = matricula ? one('SELECT matricula,email FROM users WHERE matricula=?', matricula) : null;
+  const u = cuentaPorMatricula(MAT(req.body?.matricula), 'matricula,email');
   const e = u ? emitirCodigo('recuperar', u.matricula, u.email) : null;
   // Misma respuesta (y sin esperar al correo) exista o no la cuenta, y también si es muy pronto para otro código: no se revela quién tiene cuenta.
   res.json({ ok: true, mensaje: 'Si esa matrícula tiene una cuenta, enviamos un código a su correo. Revisa también la carpeta de spam.' });
@@ -196,9 +202,9 @@ app.post('/api/recuperar', limiteRec, (req, res) => {
     .then(ok => { if (!ok) run('DELETE FROM codigos WHERE tipo=? AND matricula=?', 'recuperar', u.matricula); }).catch(() => {});
 });
 app.post('/api/recuperar/confirmar', limiteRec, async (req, res) => {
-  const matricula = String(req.body?.matricula ?? '').trim(), password = req.body?.password;
+  const cuenta = cuentaPorMatricula(MAT(req.body?.matricula), 'matricula'), matricula = cuenta ? cuenta.matricula : MAT(req.body?.matricula), password = req.body?.password;
   const c = comprobarCodigo('recuperar', matricula, req.body?.codigo); if (c.error) return res.status(c.status).json({ error: c.error });
-  const u = one('SELECT id,rol,email FROM users WHERE matricula=?', matricula); if (!u) return res.status(400).json({ error: 'El código venció o no hay una solicitud pendiente. Pide uno nuevo.' });
+  const u = cuentaPorMatricula(matricula, 'id,rol,email'); if (!u) return res.status(400).json({ error: 'El código venció o no hay una solicitud pendiente. Pide uno nuevo.' });
   // La contraseña se revisa DESPUÉS del código, y si no cumple el código no se gasta: se puede corregir y reintentar.
   const err = typeof password !== 'string' ? 'Escribe la nueva contraseña.' : passwordInvalida(u.rol, password); if (err) return res.status(400).json({ error: err });
   run('UPDATE users SET pass_hash=? WHERE id=?', bcrypt.hashSync(password, 10), u.id);
@@ -207,7 +213,7 @@ app.post('/api/recuperar/confirmar', limiteRec, async (req, res) => {
   notificar(null, [u.email], 'SAE · Tu contraseña cambió', 'La contraseña de tu cuenta del Sistema de Asesorías Estudiantil se restableció y se cerraron las sesiones abiertas. Si no fuiste tú, contacta a la secretaría de inmediato.').catch(() => {});
 });
 app.post('/api/login', limite, (req, res) => {
-  const { matricula, password, recordar } = req.body || {}; const u = one('SELECT * FROM users WHERE matricula=?', String(matricula || '').trim());
+  const { matricula, password } = req.body || {}; const u = cuentaPorMatricula(MAT(matricula));
   if (!u || !bcrypt.compareSync(String(password || ''), u.pass_hash)) return res.status(401).json({ error: 'Matrícula o contraseña incorrecta.' });
   if (!u.activo) return res.status(403).json({ error: 'Tu cuenta está desactivada. Contacta a la secretaría.' });   // solo tras acertar la contraseña: no revela cuentas a quien no la tiene
   abrir(res, u, recordar === true); res.json({ ok: true });
@@ -433,7 +439,7 @@ app.get('/api/qr/docentes', auth('docente', 'secretaria'), async (req, res) => {
 // ---- Panel de administración (solo secretaría): docentes, padrón y estudiantes, con bitácora de lo que se hace ----
 const crearUsuario = require('./scripts/crear-usuario');
 const CORREO_OK = c => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c) && c.length <= 120;
-const CLAVE_OK = c => /^[A-Za-z0-9._-]{3,40}$/.test(c);
+const { esMatricula: CLAVE_OK, MENSAJE_MATRICULA } = require('./matricula');
 const texto = (v, max) => typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max + 1) : '';   // +1: si pasa del máximo se detecta y se rechaza
 const auditar = (req, accion, detalle) => run('INSERT INTO auditoria(usuario_id,usuario,accion,detalle) VALUES(?,?,?,?)', req.user.id, `${req.user.nombre} (${req.user.matricula})`, accion, detalle);
 const busqueda = v => `%${String(v ?? '').trim().slice(0, 60).replace(/[\\%_]/g, c => '\\' + c)}%`;   // LIKE sin comodines del usuario
@@ -454,13 +460,13 @@ app.get('/api/admin/docentes', auth('secretaria'), (req, res) => res.json(q(SQL_
 
 app.post('/api/admin/docentes', auth('secretaria'), async (req, res) => {
   const b = req.body || {}, clave = texto(b.clave, 40), nombre = texto(b.nombre, 120), materias = texto(b.materias, 200), cubiculo = texto(b.cubiculo, 60), email = texto(b.email, 120).toLowerCase();
-  if (!CLAVE_OK(clave)) return res.status(400).json({ error: 'La clave debe tener de 3 a 40 caracteres: letras, números, punto o guion.' });
+  if (!CLAVE_OK(clave)) return res.status(400).json({ error: `La clave debe ser ${MENSAJE_MATRICULA}.` });
   if (!nombre || nombre.length > 120) return res.status(400).json({ error: 'Escribe el nombre (máximo 120 caracteres).' });
   if (!materias || materias.length > 200) return res.status(400).json({ error: 'Escribe las materias, separadas por comas (máximo 200 caracteres).' });
   if (cubiculo.length > 60) return res.status(400).json({ error: 'El cubículo es demasiado largo (máximo 60 caracteres).' });
   const e = errorCorreo(email, clave); if (e) return res.status(400).json({ error: e });
-  if (one('SELECT 1 FROM users WHERE matricula=?', clave)) return res.status(409).json({ error: `Ya existe una cuenta con la clave ${clave}.` });
-  if (one('SELECT 1 FROM padron WHERE matricula=?', clave)) return res.status(409).json({ error: `${clave} es una matrícula del padrón de estudiantes: usa otra clave.` });
+  if (cuentaPorMatricula(clave, '1')) return res.status(409).json({ error: `Ya existe una cuenta con la clave ${clave}.` });
+  if (padronPorMatricula(clave)) return res.status(409).json({ error: `${clave} es una matrícula del padrón de estudiantes: usa otra clave.` });
   const falta = sinCorreo(); if (falta) return res.status(503).json({ error: falta });   // sin correo el docente no podría elegir su contraseña
   // Nadie conoce la contraseña inicial: el docente la elige con «Olvidé mi contraseña» (código al correo), así la secretaría nunca maneja contraseñas.
   let u; try { u = crearUsuario(db, { rol: 'docente', matricula: clave, nombre, email, materias, cubiculo, password: crypto.randomBytes(24).toString('hex') }); }
@@ -506,11 +512,11 @@ app.patch('/api/admin/estudiantes/:id', auth('secretaria'), (req, res) => {
   res.json({ ok: true, activo });
 });
 
-const padronFila = m => one('SELECT p.matricula, p.nombre, COALESCE(p.email,\'\') email, EXISTS(SELECT 1 FROM users u WHERE u.matricula=p.matricula) registrado FROM padron p WHERE p.matricula=?', m);
+const padronFila = m => one('SELECT p.matricula, p.nombre, COALESCE(p.email,\'\') email, EXISTS(SELECT 1 FROM users u WHERE u.matricula=p.matricula COLLATE NOCASE) registrado FROM padron p WHERE p.matricula=?', m);
 app.get('/api/admin/padron', auth('secretaria'), (req, res) => {
   const t = busqueda(req.query.q), donde = "(p.matricula LIKE ? ESCAPE '\\' OR p.nombre LIKE ? ESCAPE '\\' OR p.email LIKE ? ESCAPE '\\')";
   res.json({ total: one(`SELECT COUNT(*) n FROM padron p WHERE ${donde}`, t, t, t).n,
-    filas: q(`SELECT p.matricula, p.nombre, COALESCE(p.email,'') email, EXISTS(SELECT 1 FROM users u WHERE u.matricula=p.matricula) registrado FROM padron p WHERE ${donde} ORDER BY p.nombre, p.matricula LIMIT ${FILAS_ADMIN}`, t, t, t) });
+    filas: q(`SELECT p.matricula, p.nombre, COALESCE(p.email,'') email, EXISTS(SELECT 1 FROM users u WHERE u.matricula=p.matricula COLLATE NOCASE) registrado FROM padron p WHERE ${donde} ORDER BY p.nombre, p.matricula LIMIT ${FILAS_ADMIN}`, t, t, t) });
 });
 // Valida nombre y correo opcional de una fila del padrón (mismas reglas que npm run cargar-padron); devuelve { error } o los valores limpios.
 const datosPadron = (b, matricula, previo) => {
@@ -523,16 +529,16 @@ const datosPadron = (b, matricula, previo) => {
 };
 app.post('/api/admin/padron', auth('secretaria'), (req, res) => {
   const b = req.body || {}, matricula = texto(b.matricula, 40);
-  if (!CLAVE_OK(matricula)) return res.status(400).json({ error: 'La matrícula debe tener de 3 a 40 caracteres: letras, números, punto o guion.' });
-  if (one('SELECT 1 FROM padron WHERE matricula=?', matricula)) return res.status(409).json({ error: `La matrícula ${matricula} ya está en el padrón.` });
-  if (one('SELECT 1 FROM users WHERE matricula=?', matricula)) return res.status(409).json({ error: `${matricula} es la clave de una cuenta existente.` });
+  if (!CLAVE_OK(matricula)) return res.status(400).json({ error: `La matrícula debe ser ${MENSAJE_MATRICULA}.` });
+  if (padronPorMatricula(matricula)) return res.status(409).json({ error: `La matrícula ${matricula} ya está en el padrón.` });
+  if (cuentaPorMatricula(matricula, '1')) return res.status(409).json({ error: `${matricula} es la clave de una cuenta existente.` });
   const d = datosPadron(b, matricula); if (d.error) return res.status(400).json({ error: d.error });
   run('INSERT INTO padron(matricula,nombre,email) VALUES(?,?,?)', matricula, d.nombre, d.email); auditar(req, 'padrón: alta', `${matricula} · ${d.nombre}`);
   res.json({ ok: true, fila: padronFila(matricula) });
 });
 app.patch('/api/admin/padron/:matricula', auth('secretaria'), (req, res) => {
-  const p = one('SELECT matricula,nombre,email FROM padron WHERE matricula=?', req.params.matricula); if (!p) return res.status(404).json({ error: 'Esa matrícula no está en el padrón.' });
-  if (one('SELECT 1 FROM users WHERE matricula=?', p.matricula)) return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta: su nombre y correo ya no se editan desde el padrón.' });
+  const p = padronPorMatricula(req.params.matricula); if (!p) return res.status(404).json({ error: 'Esa matrícula no está en el padrón.' });
+  if (cuentaPorMatricula(p.matricula, '1')) return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta: su nombre y correo ya no se editan desde el padrón.' });
   const b = req.body || {}; if (!('nombre' in b) && !('email' in b)) return res.status(400).json({ error: 'No hay nada que cambiar.' });
   const d = datosPadron(b, p.matricula, p); if (d.error) return res.status(400).json({ error: d.error });
   run('UPDATE padron SET nombre=?, email=? WHERE matricula=?', d.nombre, d.email, p.matricula);
@@ -540,8 +546,8 @@ app.patch('/api/admin/padron/:matricula', auth('secretaria'), (req, res) => {
   res.json({ ok: true, fila: padronFila(p.matricula) });
 });
 app.delete('/api/admin/padron/:matricula', auth('secretaria'), (req, res) => {
-  const p = one('SELECT matricula,nombre FROM padron WHERE matricula=?', req.params.matricula); if (!p) return res.status(404).json({ error: 'Esa matrícula no está en el padrón.' });
-  if (one('SELECT 1 FROM users WHERE matricula=?', p.matricula)) return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta: para impedirle el acceso bloquéala en la pestaña Estudiantes.' });
+  const p = padronPorMatricula(req.params.matricula); if (!p) return res.status(404).json({ error: 'Esa matrícula no está en el padrón.' });
+  if (cuentaPorMatricula(p.matricula, '1')) return res.status(409).json({ error: 'Esa matrícula ya tiene cuenta: para impedirle el acceso bloquéala en la pestaña Estudiantes.' });
   run('DELETE FROM padron WHERE matricula=?', p.matricula); auditar(req, 'padrón: baja', `${p.matricula} · ${p.nombre}`);
   res.json({ ok: true });
 });
