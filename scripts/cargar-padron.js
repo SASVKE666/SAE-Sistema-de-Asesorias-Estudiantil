@@ -7,6 +7,7 @@
 // Si alguna fila tiene un error no se carga NADA y se listan todos los errores con su número de línea. Las matrículas que ya están se actualizan;
 // nunca se borra a nadie del padrón. Usa la base de DB_FILE (o data/sae.db).
 const fs = require('fs');
+const { esMatricula, MENSAJE_MATRICULA } = require('../matricula');
 
 const MAX_BYTES = 5 * 1024 * 1024, MAX_FILAS = 50000;
 const quitarAcentos = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -45,14 +46,15 @@ function cargarPadron(db, buffer, { simular = false } = {}) {
 
   const errores = [], vistas = new Map(), correos = new Map(), listas = [];
   const personal = db.prepare("SELECT matricula FROM users WHERE rol<>'estudiante'"), duenoDeCorreo = db.prepare('SELECT matricula,rol FROM users WHERE lower(email)=?');
-  const claves = new Set(personal.all().map(u => u.matricula));
+  const claves = new Set(personal.all().map(u => u.matricula.toUpperCase()));
   for (const f of filas) {
     const cel = k => (k in idx ? String(f.celdas[idx[k]] ?? '') : '').trim();
     const matricula = cel('matricula'), nombre = cel('nombre').replace(/\s+/g, ' '), correo = cel('correo').toLowerCase(), err = m => errores.push(`Línea ${f.linea}: ${m}`);
-    if (!/^[A-Za-z0-9._-]{3,40}$/.test(matricula)) { err(`matrícula no válida "${matricula}" (solo letras, números, punto, guion; de 3 a 40 caracteres).`); continue; }
+    if (!esMatricula(matricula)) { err(`matrícula no válida "${matricula}" (${MENSAJE_MATRICULA}).`); continue; }
     if (!nombre || nombre.length > 120) { err(`el nombre de ${matricula} está vacío o pasa de 120 caracteres.`); continue; }
-    if (vistas.has(matricula)) { err(`la matrícula ${matricula} ya aparece en la línea ${vistas.get(matricula)}.`); continue; } vistas.set(matricula, f.linea);
-    if (claves.has(matricula)) { err(`${matricula} es la clave de una cuenta de docente o secretaría, no de un estudiante.`); continue; }
+    const clave = matricula.toUpperCase();   // «ab123» y «AB123» son la misma matrícula
+    if (vistas.has(clave)) { err(`la matrícula ${matricula} ya aparece en la línea ${vistas.get(clave)} (no se distingue entre mayúsculas y minúsculas).`); continue; } vistas.set(clave, f.linea);
+    if (claves.has(clave)) { err(`${matricula} es la clave de una cuenta de docente o secretaría, no de un estudiante.`); continue; }
     if (correo) {
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo) || correo.length > 120) { err(`correo no válido "${correo}" (matrícula ${matricula}).`); continue; }
       if (correos.has(correo)) { err(`el correo ${correo} ya está en la línea ${correos.get(correo)}: cada estudiante necesita el suyo.`); continue; } correos.set(correo, f.linea);
@@ -62,7 +64,7 @@ function cargarPadron(db, buffer, { simular = false } = {}) {
   }
   const resumen = { filas: filas.length, nuevas: 0, actualizadas: 0, sinCambios: 0, sinCorreo: 0, conCuenta: 0, errores, simulado: simular };
   if (errores.length) return resumen;
-  const leer = db.prepare('SELECT nombre,email FROM padron WHERE matricula=?'), cuenta = db.prepare('SELECT 1 FROM users WHERE matricula=?');
+  const leer = db.prepare('SELECT matricula,nombre,email FROM padron WHERE matricula=? COLLATE NOCASE'), cuenta = db.prepare('SELECT 1 FROM users WHERE matricula=? COLLATE NOCASE');
   const insertar = db.prepare('INSERT INTO padron(matricula,nombre,email) VALUES(?,?,?)'), actualizar = db.prepare('UPDATE padron SET nombre=?, email=? WHERE matricula=?');
   db.exec('BEGIN');
   try {
@@ -70,7 +72,7 @@ function cargarPadron(db, buffer, { simular = false } = {}) {
       const ant = leer.get(p.matricula), email = p.correo ?? ant?.email ?? null;      // un correo vacío en el archivo no borra el que ya estaba
       if (!email) resumen.sinCorreo++; if (cuenta.get(p.matricula)) resumen.conCuenta++;
       if (!ant) { resumen.nuevas++; insertar.run(p.matricula, p.nombre, email); }
-      else if (ant.nombre !== p.nombre || (ant.email ?? null) !== email) { resumen.actualizadas++; actualizar.run(p.nombre, email, p.matricula); }
+      else if (ant.nombre !== p.nombre || (ant.email ?? null) !== email) { resumen.actualizadas++; actualizar.run(p.nombre, email, ant.matricula); }   // conserva la forma guardada de la matrícula
       else resumen.sinCambios++;
     }
     db.exec(simular ? 'ROLLBACK' : 'COMMIT');

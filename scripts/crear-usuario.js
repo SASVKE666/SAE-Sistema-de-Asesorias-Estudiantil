@@ -5,6 +5,7 @@
 // La contraseña se pide por teclado (no se ve) o, para automatizar, se toma de la variable SAE_PASSWORD. Usa la base de DB_FILE (o data/sae.db).
 const bcrypt = require('bcryptjs');
 
+const { esMatricula, MENSAJE_MATRICULA } = require('../matricula');
 const MIN_PASSWORD = 10;
 const DEMO_PASSWORDS = ['Secretaria2026', 'Docente2026'];   // contraseñas de seed.js: nunca para cuentas reales
 
@@ -12,11 +13,12 @@ function crearUsuario(db, { rol, matricula, nombre, email, password, materias, c
   matricula = String(matricula || '').trim(); nombre = String(nombre || '').trim(); email = String(email || '').trim().toLowerCase();
   if (!['secretaria', 'docente'].includes(rol)) throw new Error('El rol debe ser "secretaria" o "docente".');
   if (!matricula || !nombre) throw new Error('Indica matrícula/clave y nombre.');
+  if (!esMatricula(matricula)) throw new Error(`La matrícula/clave debe ser ${MENSAJE_MATRICULA}.`);
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('El correo no es válido.');
   if (String(password || '').length < MIN_PASSWORD) throw new Error(`La contraseña debe tener al menos ${MIN_PASSWORD} caracteres.`);
   if (DEMO_PASSWORDS.includes(password)) throw new Error('Esa contraseña es la de demostración; elige otra.');
   if (rol === 'docente' && !String(materias || '').trim()) throw new Error('Para un docente indica --materias.');
-  if (db.prepare('SELECT 1 FROM users WHERE matricula=?').get(matricula)) throw new Error(`Ya existe un usuario con la matrícula/clave ${matricula}.`);
+  if (db.prepare('SELECT 1 FROM users WHERE matricula=? COLLATE NOCASE').get(matricula)) throw new Error(`Ya existe un usuario con la matrícula/clave ${matricula}.`);
   if (db.prepare('SELECT 1 FROM users WHERE lower(email)=?').get(email)) throw new Error('Ya existe un usuario con ese correo.');   // la propiedad de una asesoría se decide por correo
   db.exec('BEGIN');
   try {
