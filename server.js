@@ -135,7 +135,11 @@ const auth = (...roles) => (req, res, next) => !req.user ? res.status(401).json(
   roles.length && !roles.includes(req.user.rol) ? res.status(403).json({ error: 'No tienes permiso para esta acción.' }) : next();
 // La sesión lleva una "versión" derivada de la contraseña vigente: al cambiar la contraseña (recuperación) todas las sesiones abiertas dejan de valer.
 const versionPass = h => crypto.createHash('sha256').update(h).digest('base64url').slice(0, 16);
-const abrir = (res, u) => res.cookie('sae', sign({ uid: u.id, exp: Date.now() + 8 * 3600e3, v: versionPass(one('SELECT pass_hash FROM users WHERE id=?', u.id).pass_hash) }), { httpOnly: true, sameSite: 'lax', secure: BASE.startsWith('https'), maxAge: 8 * 3600e3 });
+// Sesión normal: 8 h. Con «Mantener la sesión abierta» (solo al iniciar sesión): SESION_RECORDAR_DIAS días (30 por defecto, de 1 a 90; un valor inválido vuelve a 30).
+// Seguir abierta tanto tiempo no debilita lo demás: cambiar la contraseña o desactivar la cuenta cierra todas las sesiones (ver versionPass y users.activo).
+const diasRecordar = () => { const n = Number(process.env.SESION_RECORDAR_DIAS); return Number.isInteger(n) && n >= 1 && n <= 90 ? n : 30; };
+const abrir = (res, u, recordar = false) => { const ms = recordar ? diasRecordar() * 864e5 : 8 * 3600e3;
+  res.cookie('sae', sign({ uid: u.id, exp: Date.now() + ms, v: versionPass(one('SELECT pass_hash FROM users WHERE id=?', u.id).pass_hash) }), { httpOnly: true, sameSite: 'lax', secure: BASE.startsWith('https'), maxAge: ms }); };
 // Freno a fuerza bruta: solo cuentan los intentos FALLIDOS (login o registro con respuesta de error), por matrícula + IP.
 // Así una persona que se equivoca no bloquea a las demás aunque compartan IP (red de la facultad, NAT) y los accesos correctos no gastan el cupo.
 const VENTANA = 600e3, MAX_POR_CUENTA = 8, MAX_POR_IP = 100; // 8 fallos / 10 min por matrícula+IP; tope amplio por IP contra probar muchas matrículas
@@ -212,7 +216,7 @@ app.post('/api/login', limite, (req, res) => {
   const { matricula, password } = req.body || {}; const u = cuentaPorMatricula(MAT(matricula));
   if (!u || !bcrypt.compareSync(String(password || ''), u.pass_hash)) return res.status(401).json({ error: 'Matrícula o contraseña incorrecta.' });
   if (!u.activo) return res.status(403).json({ error: 'Tu cuenta está desactivada. Contacta a la secretaría.' });   // solo tras acertar la contraseña: no revela cuentas a quien no la tiene
-  abrir(res, u); res.json({ ok: true });
+  abrir(res, u, recordar === true); res.json({ ok: true });
 });
 app.post('/api/logout', (req, res) => { res.clearCookie('sae'); res.json({ ok: true }); });
 app.get('/api/me', (req, res) => res.json({ user: req.user }));
