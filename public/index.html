@@ -65,6 +65,8 @@ img[alt^="Código"]{border-radius:12px;border:1px solid var(--line);padding:6px;
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.8rem;margin:.8rem 0}.stats .card{padding:.8rem 1rem}.stats h2{margin:.2rem 0 0}.rep{width:100%;border-collapse:collapse}.rep th,.rep td{padding:.5rem .8rem;text-align:left;white-space:nowrap;border-bottom:1px solid var(--line)}
 .tabs{display:flex;gap:.4rem;flex-wrap:wrap;margin:.6rem 0}.tabs button{background:transparent;color:inherit;border:1px solid var(--line)}.tabs button.on{background:var(--navy,#16264a);color:#fff;border-color:transparent}
 .fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.6rem 1rem}
+.pw{display:flex;gap:.4rem;align-items:flex-start}.pw input{flex:1 1 0;width:100%;min-width:0}.pw .ver{flex:none;width:auto;margin:.25rem 0 .9rem;padding:.6rem .8rem;white-space:nowrap}
+.chk{display:flex;align-items:center;gap:.55rem;margin:.1rem 0 .3rem;font-weight:400;cursor:pointer}.chk input{width:auto;margin:0;flex:none}
 @media(max-width:560px){header{gap:.6rem}nav{flex:1 1 100%;order:3}#who{width:100%;justify-content:space-between}}
 </style></head><body>
 <header><b>SAE</b><nav id="nav" aria-label="Principal"></nav><span id="who" class="mut" style="color:#cfd8e8"></span></header>
@@ -91,15 +93,19 @@ function nav(){const r=location.hash.slice(1)||'catalogo',dm=/^docente\/(\d{1,9}
   if(!U)return login();if(dm)return docente(+dm[1]);({catalogo,mis,agenda,reporte,admin,bitacora,qr}[r]||catalogo)()}
 addEventListener('hashchange',nav);
 async function salir(){await api('/logout','POST');U=null;nav()}
+// Campo de contraseña con botón Mostrar/Ocultar. El botón no envía el formulario y avisa su estado a lectores de pantalla.
+const campoPass=(min,auto)=>`<div class="pw"><input id="p" type="password" required minlength="${min}" autocomplete="${auto}" autocapitalize="off" spellcheck="false"><button type="button" class="ghost ver" aria-pressed="false" aria-controls="p" aria-label="Mostrar contraseña" onclick="verPass(this)">Mostrar</button></div>`;
+function verPass(b){const i=$('#p'),ver=i.type==='password';i.type=ver?'text':'password';b.textContent=ver?'Ocultar':'Mostrar';b.setAttribute('aria-pressed',String(ver));b.setAttribute('aria-label',(ver?'Ocultar':'Mostrar')+' contraseña');i.focus()}
 function login(reg){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Unidad Académica de Economía · UAN</span><h1>Encuentra a tu docente y agenda tu asesoría.</h1>
 <p>Consulta la disponibilidad real de los docentes de la Unidad Académica de Economía, reserva un horario y recibe confirmación. Gratis y desde tu celular.</p>${/^#docente\/\d+$/.test(location.hash)?'<p class="tag confirmada" style="white-space:normal">Escaneaste el código de un docente: inicia sesión o crea tu cuenta y te llevamos directo a sus horarios.</p>':''}</div>
 <form class="card" id="f"><h2>${reg?'Crear cuenta':'Iniciar sesión'}</h2>
 <label for="m">Matrícula o clave de docente</label><input id="m" required autocomplete="username">
 ${reg?'<label for="e">Correo institucional</label><input id="e" type="email" required autocomplete="email">':''}
-<label for="p">Contraseña${reg?' (mínimo 8 caracteres)':''}</label><input id="p" type="password" required minlength="${reg?8:1}" autocomplete="${reg?'new-password':'current-password'}">
+<label for="p">Contraseña${reg?' (mínimo 8 caracteres)':''}</label>${campoPass(reg?8:1,reg?'new-password':'current-password')}
+${reg?'':'<label class="chk"><input type="checkbox" id="rec"> Mantener la sesión abierta en este dispositivo</label><p class="mut" style="margin:0 0 .9rem;font-size:.85rem">Evita volver a iniciar sesión durante varios días. Úsalo solo en tu equipo personal, no en computadoras compartidas.</p>'}
 <button class="gold" style="width:100%">${reg?'Crear cuenta':'Entrar'}</button>
 <p class="mut" style="text-align:center"><a href="#" onclick="login(${!reg});return false">${reg?'Ya tengo cuenta':'Soy estudiante y no tengo cuenta'}</a>${reg?'':' · <a href="#" onclick="recuperar();return false">Olvidé mi contraseña</a>'}</p></form></section>`;
-  $('#f').onsubmit=async e=>{e.preventDefault();try{const d={matricula:$('#m').value,email:reg?$('#e').value:undefined,password:$('#p').value};
+  $('#f').onsubmit=async e=>{e.preventDefault();try{const d={matricula:$('#m').value,email:reg?$('#e').value:undefined,password:$('#p').value,recordar:reg?undefined:$('#rec').checked};
     const r=await api(reg?'/registro':'/login','POST',d);if(r.pendiente)return verificar(d,r.correo);await init()}catch(x){toast(x.message,1)}}}
 // Recuperar la contraseña: 1) matrícula → código al correo de la cuenta; 2) código + contraseña nueva. Los avisos no revelan si la matrícula tiene cuenta.
 function recuperar(m=''){ $('#app').innerHTML=`<section class="hero"><div><span class="kicker">Recuperar acceso</span><h1>¿Olvidaste tu contraseña?</h1>
@@ -112,7 +118,7 @@ function restablecer(m){ $('#app').innerHTML=`<section class="hero"><div><span c
 <p>Si la matrícula tiene una cuenta, el código llegó a su correo (revisa también el spam). Caduca en 15 minutos. Al cambiar la contraseña se cierran las sesiones abiertas.</p></div>
 <form class="card" id="n"><h2>Contraseña nueva</h2><label for="c">Código de 6 dígitos</label>
 <input id="c" required inputmode="numeric" pattern="[0-9 ]{6,7}" maxlength="7" autocomplete="one-time-code">
-<label for="p">Contraseña nueva (mínimo 8 caracteres; 10 para docentes y secretaría)</label><input id="p" type="password" required minlength="8" autocomplete="new-password">
+<label for="p">Contraseña nueva (mínimo 8 caracteres; 10 para docentes y secretaría)</label>${campoPass(8,'new-password')}
 <button class="gold" style="width:100%">Cambiar contraseña</button>
 <p class="mut" style="text-align:center"><a href="#" id="re">Reenviar el código</a> · <a href="#" id="at">Volver</a></p></form></section>`;
   $('#c').focus();
