@@ -212,10 +212,14 @@ app.post('/api/recuperar/confirmar', limiteRec, async (req, res) => {
   res.json({ ok: true });
   notificar(null, [u.email], 'SAE · Tu contraseña cambió', 'La contraseña de tu cuenta del Sistema de Asesorías Estudiantil se restableció y se cerraron las sesiones abiertas. Si no fuiste tú, contacta a la secretaría de inmediato.').catch(() => {});
 });
+const DUMMY_HASH = '$2a$10$e8wF3s8FzZkU2J6178r5O.D5W0tqQWzBfxP3mYgM67Yg4pZ/f7G.q';
+
 app.post('/api/login', limite, (req, res) => {
-  const { matricula, password } = req.body || {}; const u = cuentaPorMatricula(MAT(matricula));
-  if (!u || !bcrypt.compareSync(String(password || ''), u.pass_hash)) return res.status(401).json({ error: 'Matrícula o contraseña incorrecta.' });
-  if (!u.activo) return res.status(403).json({ error: 'Tu cuenta está desactivada. Contacta a la secretaría.' });   // solo tras acertar la contraseña: no revela cuentas a quien no la tiene
+  const { matricula, password, recordar } = req.body || {}; const u = cuentaPorMatricula(MAT(matricula));
+  const hash = u ? u.pass_hash : DUMMY_HASH;
+  const match = bcrypt.compareSync(String(password || ''), hash);
+  if (!u || !match) return res.status(401).json({ error: 'Matrícula o contraseña incorrecta.' });
+  if (!u.activo) { res.clearCookie('sae'); return res.status(403).json({ error: 'Tu cuenta está desactivada. Contacta a la secretaría.' }); }   // solo tras acertar la contraseña: no revela cuentas a quien no la tiene
   abrir(res, u, recordar === true); res.json({ ok: true });
 });
 app.post('/api/logout', (req, res) => { res.clearCookie('sae'); res.json({ ok: true }); });

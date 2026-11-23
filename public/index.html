@@ -90,7 +90,7 @@ const rutas={
 async function init(){U=(await api('/me')).user;nav()}
 function nav(){const r=location.hash.slice(1)||'catalogo',dm=/^docente\/(\d{1,9})$/.exec(r);$('#who').innerHTML=U?`${esc(U.nombre)} (${U.rol}) <button class="ghost" style="color:#fff;border-color:#4a5d82" onclick="salir()">Salir</button>`:'';
   $('#nav').innerHTML=U?Object.entries(rutas).filter(([k,v])=>v.roles.includes(U.rol)).map(([k,v])=>`<a href="#${k}" class="${k===r?'on':''}">${v.t}</a>`).join(''):'';
-  if(!U)return login();if(dm)return docente(+dm[1]);({catalogo,mis,agenda,reporte,admin,bitacora,qr}[r]||catalogo)()}
+  if(!U)return login();if(dm)return docente(+dm[1]);if(rutas[r]&&!rutas[r].roles.includes(U.rol))return catalogo();({catalogo,mis,agenda,reporte,admin,bitacora,qr}[r]||catalogo)()}
 addEventListener('hashchange',nav);
 async function salir(){await api('/logout','POST');U=null;nav()}
 // Campo de contraseña con botón Mostrar/Ocultar. El botón no envía el formulario y avisa su estado a lectores de pantalla.
