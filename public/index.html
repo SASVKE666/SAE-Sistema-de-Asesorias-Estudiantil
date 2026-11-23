@@ -137,10 +137,12 @@ function verificar(d,correo){ $('#app').innerHTML=`<section class="hero"><div><s
   $('#re').onclick=async e=>{e.preventDefault();try{await api('/registro','POST',d);toast('Te enviamos un código nuevo.')}catch(x){toast(x.message,1)}};
   $('#at').onclick=e=>{e.preventDefault();login(true)}}
 async function catalogo(){ $('#app').innerHTML=`<h2>Docentes</h2><label for="b">Busca por docente o materia</label><input id="b" type="search" placeholder="Ej. Estadística"><div id="l" class="grid"></div><div id="det"></div>`;
-  const pintar=async()=>{const d=await api('/docentes?q='+encodeURIComponent($('#b').value));
+  let _t, _c=0;
+  const pintar=async()=>{const seq=++_c,d=await api('/docentes?q='+encodeURIComponent($('#b').value));if(seq!==_c)return;
     $('#l').innerHTML=d.map(x=>`<div class="card"><div class="row"><div class="av">${esc(ini(x.nombre))}</div><div><b>${esc(x.nombre)}</b><div class="mut">${esc(x.cubiculo||'')}</div></div></div>
-    <p>${esc(x.materias)}</p><span class="tag">${x.libres} horarios libres</span> ${U.rol==='estudiante'?`<button class="gold" style="float:right" onclick="agendar(${x.id},'${esc(x.nombre)}','${esc(x.materias.split(',')[0])}')">Agendar</button>`:''}</div>`).join('')||'<p class="mut">Sin resultados. Prueba con otra materia.</p>'};
-  $('#b').oninput=pintar;pintar()}
+    <p>${esc(x.materias)}</p><span class="tag">${x.libres} horarios libres</span> ${U.rol==='estudiante'?`<button class="gold ag-btn" style="float:right" data-id="${x.id}" data-nombre="${esc(x.nombre)}" data-materia="${esc(x.materias.split(',')[0].trim())}">Agendar</button>`:''}</div>`).join('')||'<p class="mut">Sin resultados. Prueba con otra materia.</p>';
+    $('#l').querySelectorAll('.ag-btn').forEach(b=>b.onclick=()=>agendar(+b.dataset.id,b.dataset.nombre,b.dataset.materia));};
+  $('#b').oninput=()=>{clearTimeout(_t);_t=setTimeout(pintar,200)};pintar()}
 // Enlace directo (#docente/<id>), el que abre el QR de cada docente: su ficha y, si eres estudiante, sus horarios libres para agendar.
 async function docente(id){let d;try{d=await api('/docentes/'+id)}catch(x){$('#app').innerHTML=`<h2>Docente no encontrado</h2><div class="card"><p>Este docente ya no está en el sistema; puede que el código QR sea antiguo.</p><a href="#catalogo">Ver todos los docentes</a></div>`;return}
   $('#app').innerHTML=`<h2>Asesoría con ${esc(d.nombre)}</h2><div class="card"><div class="row"><div class="av">${esc(ini(d.nombre))}</div><div><b>${esc(d.nombre)}</b><div class="mut">${esc(d.cubiculo||'')}</div></div></div>

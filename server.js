@@ -225,11 +225,13 @@ app.post('/api/login', limite, (req, res) => {
 app.post('/api/logout', (req, res) => { res.clearCookie('sae'); res.json({ ok: true }); });
 app.get('/api/me', (req, res) => res.json({ user: req.user }));
 
+const busqueda = v => `%${String(v ?? '').trim().slice(0, 60).replace(/[\\%_]/g, c => '\\' + c)}%`;   // LIKE sin comodines del usuario
+
 app.get('/api/docentes', auth(), (req, res) => {
-  const t = `%${(req.query.q || '').trim()}%`;
+  const t = busqueda(req.query.q);
   res.json(q(`SELECT d.id, u.nombre, d.materias, d.cubiculo, d.foto,
     (SELECT COUNT(*) FROM horarios h WHERE h.docente_id=d.id AND h.libre=1 AND ${futuro('h')}) libres
-    FROM docentes d JOIN users u ON u.id=d.user_id WHERE u.activo=1 AND (u.nombre LIKE ? OR d.materias LIKE ?) ORDER BY u.nombre`, ...paramsFuturo(), t, t));
+    FROM docentes d JOIN users u ON u.id=d.user_id WHERE u.activo=1 AND (u.nombre LIKE ? ESCAPE '\\' OR d.materias LIKE ? ESCAPE '\\') ORDER BY u.nombre`, ...paramsFuturo(), t, t));
 });
 // Una ficha de docente (la usa el enlace directo del QR de cada docente: #docente/<id>).
 app.get('/api/docentes/:id', auth(), (req, res) => {
@@ -237,8 +239,10 @@ app.get('/api/docentes/:id', auth(), (req, res) => {
     (SELECT COUNT(*) FROM horarios h WHERE h.docente_id=d.id AND h.libre=1 AND ${futuro('h')}) libres FROM docentes d JOIN users u ON u.id=d.user_id WHERE d.id=? AND u.activo=1`, ...paramsFuturo(), req.params.id);
   d ? res.json(d) : res.status(404).json({ error: 'Ese docente no está en el sistema.' });
 });
-app.get('/api/docentes/:id/horarios', auth(), (req, res) =>
-  res.json(q(`SELECT h.id,h.fecha,h.hora FROM horarios h JOIN docentes d ON d.id=h.docente_id JOIN users u ON u.id=d.user_id WHERE h.docente_id=? AND u.activo=1 AND h.libre=1 AND ${futuro('h')} ORDER BY h.fecha,h.hora`, req.params.id, ...paramsFuturo())));
+app.get('/api/docentes/:id/horarios', auth(), (req, res) => {
+  if (!/^\d{1,9}$/.test(req.params.id)) return res.json([]);
+  res.json(q(`SELECT h.id,h.fecha,h.hora FROM horarios h JOIN docentes d ON d.id=h.docente_id JOIN users u ON u.id=d.user_id WHERE h.docente_id=? AND u.activo=1 AND h.libre=1 AND ${futuro('h')} ORDER BY h.fecha,h.hora`, req.params.id, ...paramsFuturo()));
+});
 
 // Tope de asesorías ACTIVAS por estudiante (pendientes o confirmadas cuyo horario aún no llega): evita que una cuenta acapare los horarios de un docente.
 // Se puede ajustar con MAX_ASESORIAS_ACTIVAS; un valor inválido vuelve a 2. Las canceladas, las realizadas y las que ya pasaron no cuentan.
@@ -446,7 +450,6 @@ const CORREO_OK = c => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c) && c.length <= 120;
 const { esMatricula: CLAVE_OK, MENSAJE_MATRICULA } = require('./matricula');
 const texto = (v, max) => typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, max + 1) : '';   // +1: si pasa del máximo se detecta y se rechaza
 const auditar = (req, accion, detalle) => run('INSERT INTO auditoria(usuario_id,usuario,accion,detalle) VALUES(?,?,?,?)', req.user.id, `${req.user.nombre} (${req.user.matricula})`, accion, detalle);
-const busqueda = v => `%${String(v ?? '').trim().slice(0, 60).replace(/[\\%_]/g, c => '\\' + c)}%`;   // LIKE sin comodines del usuario
 const FILAS_ADMIN = 50;
 const abiertasDe = col => `(SELECT COUNT(*) FROM asesorias a WHERE a.${col}=? AND a.estado IN ('pendiente','confirmada'))`;
 const SQL_DOCENTES = `SELECT d.id, u.matricula clave, u.nombre, u.email, d.materias, COALESCE(d.cubiculo,'') cubiculo, u.activo,
